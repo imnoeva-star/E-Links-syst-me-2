@@ -127,6 +127,10 @@ test('static app includes local production CSS and the technician login', async 
   const introCssText = await introCss.text();
   assert.match(introCssText, /@keyframes e-links-intro-orbit/);
   assert.match(introCssText, /translateX\(124px\)/);
+  assert.match(
+    introCssText,
+    /e-links-intro\[data-dismissed="true"\]\s*\{\s*opacity:\s*0;\s*visibility:\s*hidden;\s*pointer-events:\s*none;/,
+  );
   const offlineStore = await fetch(`${baseUrl}/offline-store.js`);
   assert.equal(offlineStore.status, 200);
   assert.match(await offlineStore.text(), /indexedDB\.open/);
@@ -147,7 +151,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(pageHtml, /rel="apple-touch-icon" href="\/icon-192\.png"/);
   const serviceWorker = await fetch(`${baseUrl}/service-worker.js`);
   const serviceWorkerText = await serviceWorker.text();
-  assert.match(serviceWorkerText, /atelier-express-v11/);
+  assert.match(serviceWorkerText, /atelier-express-v12/);
   assert.match(serviceWorkerText, /offline-store\.js/);
   assert.match(serviceWorkerText, /icon-512\.png/);
 });

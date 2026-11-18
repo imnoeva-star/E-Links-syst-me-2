@@ -1,4 +1,4 @@
-const CACHE_NAME = 'atelier-express-v11';
+const CACHE_NAME = 'atelier-express-v12';
 const APP_FILES = [
   '/',
   '/app.js',
