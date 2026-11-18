@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f1f5f9">
+  <meta name="description" content="Gestion rapide des réparations de l'atelier.">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/e-links-intro.css">
+  <script src="/e-links-intro.js"></script>
+  <title>Atelier Express</title>
+</head>
+<body class="min-h-screen bg-slate-100 text-slate-900">
+  <e-links-intro id="e-links-intro"></e-links-intro>
+
+  <main id="login-screen" class="mx-auto flex min-h-screen max-w-sm items-center px-4 py-10">
+    <form id="login-form" class="w-full rounded-2xl bg-white p-6 shadow-sm">
+      <p class="text-xs font-bold uppercase tracking-widest text-teal-700">Atelier Express</p>
+      <h1 class="mb-1 mt-2 text-2xl font-black">Connexion</h1>
+      <p class="mb-6 text-sm text-slate-500">Connectez-vous avec votre compte technicien.</p>
+      <label for="login-email" class="mb-1 block text-sm font-semibold">Adresse e-mail</label>
+      <input id="login-email" name="email" type="email" autocomplete="username" required
+        class="mb-4 w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-teal-600">
+      <label for="login-password" class="mb-1 block text-sm font-semibold">Mot de passe</label>
+      <input id="login-password" name="password" type="password" autocomplete="current-password"
+        minlength="6" maxlength="12" required
+        class="w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-teal-600">
+      <label class="mt-4 flex items-center gap-2 text-sm text-slate-600">
+        <input id="remember-session" type="checkbox" checked
+          class="h-4 w-4 rounded border-slate-300 text-teal-700 focus:ring-teal-600">
+        Rester connecté sur cet appareil (30 jours)
+      </label>
+      <button type="submit" class="mt-5 w-full rounded-xl bg-teal-700 px-4 py-3 font-bold text-white">
+        Se connecter
+      </button>
+      <button id="show-registration" type="button" class="mt-3 w-full rounded-xl bg-teal-50 px-4 py-3 font-semibold text-teal-800">
+        Créer un compte
+      </button>
+      <button id="show-password-recovery" type="button" class="mt-3 w-full text-sm font-semibold text-teal-800 underline">
+        Mot de passe oublié ?
+      </button>
+      <p id="password-recovery-config-note" class="mt-2 hidden text-xs text-amber-700">
+        L’envoi des liens de récupération doit être configuré par l’administrateur.
+      </p>
+      <p id="login-message" role="status" aria-live="polite" class="mt-3 min-h-5 text-sm"></p>
+    </form>
+
+    <form id="registration-form" class="hidden w-full rounded-2xl bg-white p-6 shadow-sm">
+      <p class="text-xs font-bold uppercase tracking-widest text-teal-700">Atelier Express</p>
+      <h1 id="registration-title" class="mb-1 mt-2 text-2xl font-black">Créer un compte</h1>
+      <p id="registration-description" class="mb-5 text-sm text-slate-500"></p>
+      <label for="register-name" class="mb-1 block text-sm font-semibold">Nom</label>
+      <input id="register-name" type="text" maxlength="80" autocomplete="name" required
+        class="mb-4 w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-teal-600">
+      <label for="register-email" class="mb-1 block text-sm font-semibold">Adresse e-mail</label>
+      <input id="register-email" type="email" maxlength="254" autocomplete="email" required
+        class="mb-4 w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-teal-600">
+      <label for="register-password" class="mb-1 block text-sm font-semibold">Mot de passe · 6 à 12 caractères</label>
+      <input id="register-password" type="password" minlength="6" maxlength="12" autocomplete="new-password" required
+        class="mb-4 w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-teal-600">
+      <label for="register-confirmation" class="mb-1 block text-sm font-semibold">Confirmer le mot de passe</label>
+      <input id="register-confirmation" type="password" minlength="6" maxlength="12" autocomplete="new-password" required
+        class="w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-teal-600">
+      <div id="setup-code-container" class="mt-4 hidden">
+        <label id="setup-code-label" for="setup-code" class="mb-1 block text-sm font-semibold">Code d’invitation</label>
+        <input id="setup-code" type="password" autocomplete="one-time-code"
+          class="w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-teal-600">
+      </div>
+      <button type="submit" class="mt-5 w-full rounded-xl bg-teal-700 px-4 py-3 font-bold text-white">
+        Créer mon compte
+      </button>
+      <button id="show-login" type="button" class="mt-3 w-full rounded-xl bg-slate-100 px-4 py-3 font-semibold">
+        Retour à la connexion
+      </button>
+      <p id="registration-message" role="status" aria-live="polite" class="mt-3 min-h-5 text-sm"></p>
+    </form>
+
+    <form id="password-recovery-form" class="hidden w-full rounded-2xl bg-white p-6 shadow-sm">
+      <p class="text-xs font-bold uppercase tracking-widest text-teal-700">Atelier Express</p>
+      <h1 class="mb-1 mt-2 text-2xl font-black">Mot de passe oublié</h1>
+      <p class="mb-5 text-sm text-slate-500">Nous vous enverrons un lien valable une heure si l’adresse correspond à un compte actif.</p>
+      <label for="recovery-email" class="mb-1 block text-sm font-semibold">Adresse e-mail</label>
+      <input id="recovery-email" type="email" maxlength="254" autocomplete="email" required
+        class="w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-teal-600">
+      <button type="submit" class="mt-5 w-full rounded-xl bg-teal-700 px-4 py-3 font-bold text-white">
+        Envoyer le lien
+      </button>
+      <button id="recovery-back" type="button" class="mt-3 w-full rounded-xl bg-slate-100 px-4 py-3 font-semibold">
+        Retour à la connexion
+      </button>
+      <p id="recovery-message" role="status" aria-live="polite" class="mt-3 min-h-5 text-sm"></p>
+    </form>
+
+    <form id="password-reset-form" class="hidden w-full rounded-2xl bg-white p-6 shadow-sm">
+      <p class="text-xs font-bold uppercase tracking-widest text-teal-700">Atelier Express</p>
+      <h1 class="mb-1 mt-2 text-2xl font-black">Choisir un nouveau mot de passe</h1>
+      <p class="mb-5 text-sm text-slate-500">Le mot de passe doit contenir entre 6 et 12 caractères.</p>
+      <label for="reset-password" class="mb-1 block text-sm font-semibold">Nouveau mot de passe</label>
+      <input id="reset-password" type="password" minlength="6" maxlength="12" autocomplete="new-password" required
+        class="mb-4 w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-teal-600">
+      <label for="reset-confirmation" class="mb-1 block text-sm font-semibold">Confirmer le mot de passe</label>
+      <input id="reset-confirmation" type="password" minlength="6" maxlength="12" autocomplete="new-password" required
+        class="w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-teal-600">
+      <button type="submit" class="mt-5 w-full rounded-xl bg-teal-700 px-4 py-3 font-bold text-white">
+        Modifier le mot de passe
+      </button>
+      <button id="reset-back" type="button" class="mt-3 w-full rounded-xl bg-slate-100 px-4 py-3 font-semibold">
+        Retour à la connexion
+      </button>
+      <p id="reset-message" role="status" aria-live="polite" class="mt-3 min-h-5 text-sm"></p>
+    </form>
+  </main>
+
+  <div id="app-shell" class="hidden">
+  <main id="app-main" class="mx-auto max-w-xl px-4 pb-10 pt-5">
+    <header class="mb-5 flex items-center justify-between gap-3 rounded-2xl bg-gradient-to-br from-slate-950 via-blue-950 to-violet-950 px-4 py-4 text-white shadow-lg">
+      <div class="min-w-0">
+        <p class="text-xs font-bold uppercase tracking-[.2em] text-blue-200">E-Links <span class="font-medium tracking-normal text-blue-100/70">· Atelier Express</span></p>
+        <h1 id="page-title" class="mt-1 text-lg font-black tracking-tight">Tableau de bord</h1>
+      </div>
+      <button id="menu-toggle" type="button" aria-label="Ouvrir le menu" aria-expanded="false"
+        aria-controls="main-menu" class="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-white/15 bg-white/10 text-white shadow-sm transition hover:bg-white/20">
+        <svg id="menu-icon" viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M4 6h16M4 12h16M4 18h16"></path>
+        </svg>
+      </button>
+    </header>
+    <p id="offline-status" role="status" aria-live="polite" class="mb-3 hidden rounded-lg px-3 py-2 text-sm"></p>
+    <p id="connection-message" role="status" aria-live="polite" class="mb-3 hidden rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700"></p>
+
+    <button id="menu-backdrop" type="button" aria-label="Fermer le menu"
+      class="fixed inset-0 z-40 hidden bg-slate-950/40 opacity-0 transition-opacity duration-200"></button>
+    <aside id="main-menu" role="dialog" aria-modal="true" aria-hidden="true" inert aria-label="Menu principal"
+      class="invisible fixed inset-y-0 left-0 z-50 flex w-[min(84vw,20rem)] -translate-x-full flex-col bg-white p-5 shadow-2xl transition-transform duration-300">
+      <div class="mb-6 flex items-center justify-between border-b border-slate-100 pb-5">
+        <div class="flex items-center gap-3">
+          <div class="grid h-12 w-12 place-items-center rounded-2xl bg-gradient-to-br from-teal-600 to-teal-800 text-lg font-black text-white">AE</div>
+          <div>
+            <p class="font-black">Atelier Express</p>
+            <p class="text-xs text-slate-500">Kinshasa · <span id="menu-technician-name">Technicien</span></p>
+          </div>
+        </div>
+        <button id="menu-close" type="button" aria-label="Fermer le menu"
+          class="grid h-10 w-10 place-items-center rounded-xl bg-slate-100 text-xl">×</button>
+      </div>
+      <nav class="space-y-2" aria-label="Navigation principale">
+        <button type="button" data-page="dashboard" class="menu-link flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left font-semibold">
+          <svg viewBox="0 0 24 24" class="h-6 w-6 text-teal-700" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="5" rx="2"/><rect x="13" y="10" width="8" height="11" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/></svg>
+          Tableau de bord
+        </button>
+        <button type="button" data-page="new" class="menu-link flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left font-semibold">
+          <svg viewBox="0 0 24 24" class="h-6 w-6 text-teal-700" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>
+          Nouveau dépôt
+        </button>
+        <button type="button" data-page="waiting" class="menu-link flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left font-semibold">
+          <svg viewBox="0 0 24 24" class="h-6 w-6 text-teal-700" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V5m0 14h16M8 15l3-3 3 2 5-6"/><path d="M16 8h3v3"/></svg>
+          Salle d’attente
+        </button>
+        <button type="button" data-page="archive" class="menu-link flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left font-semibold">
+          <svg viewBox="0 0 24 24" class="h-6 w-6 text-teal-700" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7h18v13H3zM2 4h20v3H2zM9 11h6"/></svg>
+          Archives
+        </button>
+        <button id="team-menu-link" type="button" data-page="team" class="menu-link hidden flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left font-semibold">
+          <svg viewBox="0 0 24 24" class="h-6 w-6 text-teal-700" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 20v-1a6 6 0 0 1 12 0v1M17 11a3 3 0 1 0-1-5.8M18 14a5 5 0 0 1 3 4.6V20"/></svg>
+          Équipe et comptes
+        </button>
+      </nav>
+      <p class="mt-auto border-t border-slate-100 pt-4 text-xs text-slate-400">Gestion simple de vos réparations</p>
+      <button id="logout" type="button" class="mt-3 w-full rounded-xl bg-slate-100 px-3 py-3 text-left text-sm font-semibold">
+        Se déconnecter
+      </button>
+    </aside>
+
+    <section id="page-dashboard" class="page-view">
+      <section class="mb-5 grid grid-cols-2 gap-3" aria-label="Résumé de l'activité">
+        <article class="col-span-2 rounded-2xl bg-white p-4 shadow-sm">
+          <p class="mb-2 text-xs text-slate-500">Encaissé cette semaine · appareils livrés et validés</p>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <p class="text-xs font-semibold text-slate-500">USD</p>
+              <p id="revenue-usd" class="text-lg font-black">—</p>
+            </div>
+            <div>
+              <p class="text-xs font-semibold text-slate-500">FC</p>
+              <p id="revenue-cdf" class="text-lg font-black">—</p>
+            </div>
+          </div>
+          <div class="mt-4 border-t border-slate-100 pt-3">
+            <div class="mb-2 flex items-center justify-between">
+              <p class="text-xs font-bold text-slate-600">Évolution quotidienne</p>
+              <p class="text-[10px] text-slate-400">Échelle par devise</p>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <p class="mb-1 text-[11px] font-bold text-teal-700">USD $</p>
+                <svg id="chart-usd" class="h-20 w-full" viewBox="0 0 210 86"
+                  role="img" aria-label="Encaissements journaliers en dollars"></svg>
+              </div>
+              <div>
+                <p class="mb-1 text-[11px] font-bold text-amber-700">FC</p>
+                <svg id="chart-cdf" class="h-20 w-full" viewBox="0 0 210 86"
+                  role="img" aria-label="Encaissements journaliers en francs congolais"></svg>
+              </div>
+            </div>
+          </div>
+        </article>
+        <article class="rounded-2xl bg-white p-4 shadow-sm">
+          <p class="text-xs text-slate-500">Dans la salle d’attente</p>
+          <p id="pending-count" class="mt-1 text-xl font-black">—</p>
+        </article>
+      </section>
+
+      <section class="rounded-2xl bg-white p-4 shadow-sm">
+        <div class="mb-3 flex items-center justify-between">
+          <h2 class="font-bold">À traiter en priorité</h2>
+          <span id="urgent-count" class="rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800">0 urgent</span>
+        </div>
+        <ul id="priority-list" class="space-y-2 text-sm text-slate-600">
+          <li class="text-slate-400">Aucune urgence pour le moment.</li>
+        </ul>
+        <button type="button" data-page="waiting" class="mt-4 text-sm font-bold text-teal-700">
+          Ouvrir la salle d’attente →
+        </button>
+        <button type="button" data-page="archive" class="mt-4 block text-sm font-bold text-slate-500">
+          Consulter les archives →
+        </button>
+      </section>
+    </section>
+
+    <section id="page-new" class="page-view hidden">
+      <section class="rounded-2xl bg-white p-4 shadow-sm">
+        <h2 class="mb-4 text-lg font-black">Nouveau dépôt</h2>
+        <form id="intake-form" class="space-y-3">
+          <div>
+            <label for="telephone" class="mb-1 block text-sm font-semibold">Téléphone du client</label>
+            <input id="telephone" name="telephone" type="tel" inputmode="tel" autocomplete="tel" required
+              placeholder="+243…" class="w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-teal-600">
+            <div id="client-match" class="mt-1 hidden rounded-lg bg-teal-50 p-2 text-sm text-teal-900"></div>
+          </div>
+          <input id="nom" name="nom" type="text" placeholder="Nom du client (facultatif)"
+            class="w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-teal-600">
+          <div>
+            <p class="mb-2 text-sm font-semibold">Marque</p>
+            <div id="brands" class="flex flex-wrap gap-2">
+              <button type="button" data-value="Tecno" class="chip">Tecno</button>
+              <button type="button" data-value="Infinix" class="chip">Infinix</button>
+              <button type="button" data-value="Samsung" class="chip">Samsung</button>
+              <button type="button" data-value="iPhone" class="chip">iPhone</button>
+              <button type="button" data-value="Itel" class="chip">Itel</button>
+            </div>
+            <input id="marque" name="marque" type="hidden" required>
+          </div>
+          <input id="modele" name="modele" type="text" placeholder="Modèle (facultatif, ex. Spark 10)"
+            class="w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-teal-600">
+          <div>
+            <p class="mb-2 text-sm font-semibold">Panne</p>
+            <div id="faults" class="flex flex-wrap gap-2">
+              <button type="button" data-value="Écran cassé" class="chip">Écran cassé</button>
+              <button type="button" data-value="Ne charge plus" class="chip">Ne charge plus</button>
+              <button type="button" data-value="Ne s’allume pas" class="chip">Ne s’allume pas</button>
+              <button type="button" data-value="Autre" class="chip">Autre</button>
+            </div>
+            <input id="panne" name="panne" type="hidden" required>
+            <input id="autre-panne" type="text" placeholder="Préciser la panne"
+              class="mt-2 hidden w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-teal-600">
+          </div>
+          <div class="grid grid-cols-[1fr_auto] gap-3">
+            <label for="prix" class="sr-only">Prix total convenu en USD, obligatoire</label>
+            <input id="prix" name="prix_convenu" type="number" min="0" step="0.01" inputmode="decimal"
+              placeholder="Prix total convenu en USD (obligatoire)" required
+              class="min-w-0 rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-teal-600">
+            <label class="flex items-center gap-2 rounded-xl bg-amber-50 px-3 text-sm font-bold text-amber-800">
+              <input id="urgent" type="checkbox" class="h-4 w-4 accent-amber-600"> Urgent
+            </label>
+          </div>
+          <button type="submit" class="w-full rounded-xl bg-teal-700 px-4 py-3 font-bold text-white active:bg-teal-800">
+            Enregistrer le dépôt
+          </button>
+          <p id="form-message" role="status" class="text-sm"></p>
+        </form>
+      </section>
+    </section>
+
+    <section id="page-waiting" class="page-view hidden">
+      <section class="mb-4 rounded-2xl bg-white p-4 shadow-sm">
+        <h2 class="mb-3 text-lg font-black">Salle d’attente</h2>
+        <div class="grid grid-cols-2 gap-2">
+          <input id="waiting-search" type="search" placeholder="Rechercher client, modèle…"
+            class="col-span-2 w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-teal-600">
+          <select id="waiting-status" aria-label="Filtrer par statut"
+            class="col-span-2 w-full rounded-xl border border-slate-200 px-3 py-3">
+            <option value="ALL">Tous les appareils en attente</option>
+            <option value="DEPOT">Dépôt</option>
+            <option value="EN_COURS">En cours</option>
+            <option value="PRET">Prêt</option>
+            <option value="URGENT">Urgents seulement</option>
+          </select>
+        </div>
+      </section>
+      <section class="rounded-2xl bg-white p-4 shadow-sm">
+        <ul id="waiting-list" class="space-y-3">
+          <li class="text-sm text-slate-400">Chargement…</li>
+        </ul>
+        <nav class="mt-4 flex items-center justify-between gap-2 border-t border-slate-100 pt-3" aria-label="Pagination salle d’attente">
+          <button id="waiting-previous" type="button" disabled class="rounded-lg bg-slate-100 px-3 py-2 text-sm font-semibold disabled:opacity-40">Précédent</button>
+          <span id="waiting-pagination-label" aria-live="polite" class="text-center text-xs text-slate-500">—</span>
+          <button id="waiting-next" type="button" disabled class="rounded-lg bg-slate-100 px-3 py-2 text-sm font-semibold disabled:opacity-40">Suivant</button>
+        </nav>
+      </section>
+    </section>
+
+    <section id="page-archive" class="page-view hidden">
+      <section class="mb-4 rounded-2xl bg-white p-4 shadow-sm">
+        <h2 class="mb-3 text-lg font-black">Archives · appareils livrés</h2>
+        <label for="archive-search" class="sr-only">Rechercher dans les archives</label>
+        <input id="archive-search" type="search" placeholder="Rechercher client, modèle…"
+          class="w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-teal-600">
+      </section>
+
+      <section class="rounded-2xl bg-white p-4 shadow-sm">
+        <ul id="archive-list" class="space-y-3">
+          <li class="text-sm text-slate-400">Chargement…</li>
+        </ul>
+        <nav class="mt-4 flex items-center justify-between gap-2 border-t border-slate-100 pt-3" aria-label="Pagination archives">
+          <button id="archive-previous" type="button" disabled class="rounded-lg bg-slate-100 px-3 py-2 text-sm font-semibold disabled:opacity-40">Précédent</button>
+          <span id="archive-pagination-label" aria-live="polite" class="text-center text-xs text-slate-500">—</span>
+          <button id="archive-next" type="button" disabled class="rounded-lg bg-slate-100 px-3 py-2 text-sm font-semibold disabled:opacity-40">Suivant</button>
+        </nav>
+      </section>
+    </section>
+
+    <section id="page-team" class="page-view hidden">
+      <section class="mb-4 rounded-2xl bg-white p-4 shadow-sm">
+        <h2 class="text-lg font-black">Équipe et comptes</h2>
+        <p class="mt-1 text-sm text-slate-500">Crée ou désactive les accès individuels des techniciens.</p>
+      </section>
+      <section class="mb-4 rounded-2xl bg-white p-4 shadow-sm">
+        <form id="technician-form" class="space-y-3">
+          <h3 class="font-bold">Ajouter un technicien</h3>
+          <label for="technician-name-input" class="sr-only">Nom du technicien</label>
+          <input id="technician-name-input" type="text" maxlength="80" placeholder="Nom"
+            class="w-full rounded-xl border border-slate-200 px-3 py-3" required>
+          <label for="technician-email-input" class="sr-only">E-mail du technicien</label>
+          <input id="technician-email-input" type="email" maxlength="254" placeholder="Adresse e-mail"
+            class="w-full rounded-xl border border-slate-200 px-3 py-3" required>
+          <label for="technician-password-input" class="sr-only">Mot de passe initial</label>
+          <input id="technician-password-input" type="password" minlength="6" maxlength="12"
+            autocomplete="new-password" placeholder="Mot de passe initial (6 à 12 caractères)"
+            class="w-full rounded-xl border border-slate-200 px-3 py-3" required>
+          <label for="technician-password-confirmation" class="sr-only">Confirmer le mot de passe initial</label>
+          <input id="technician-password-confirmation" type="password" minlength="6" maxlength="12"
+            autocomplete="new-password" placeholder="Confirmer le mot de passe"
+            class="w-full rounded-xl border border-slate-200 px-3 py-3" required>
+          <button type="submit" class="w-full rounded-xl bg-teal-700 px-4 py-3 font-bold text-white">Créer le compte</button>
+          <p id="technician-form-message" role="status" class="text-sm"></p>
+        </form>
+      </section>
+      <section class="rounded-2xl bg-white p-4 shadow-sm">
+        <h3 class="mb-3 font-bold">Comptes existants</h3>
+        <ul id="technician-list" class="space-y-3">
+          <li class="text-sm text-slate-400">Chargement…</li>
+        </ul>
+      </section>
+    </section>
+  </main>
+
+  <section id="device-dialog" aria-labelledby="device-title" class="hidden min-h-screen bg-slate-50">
+      <header class="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-slate-200 bg-white px-4 py-3 shadow-sm sm:px-6">
+        <div class="min-w-0">
+          <p class="text-xs font-bold uppercase tracking-wide text-teal-700">Dossier complet</p>
+          <h2 id="device-title" class="truncate text-lg font-black sm:text-xl">Fiche appareil</h2>
+          <p id="device-client" class="truncate text-sm text-slate-500"></p>
+        </div>
+        <button id="device-close" type="button" class="shrink-0 rounded-xl bg-slate-100 px-4 py-3 font-bold text-slate-700" aria-label="Fermer le dossier">
+          Fermer
+        </button>
+      </header>
+
+      <div class="mx-auto w-full max-w-3xl space-y-4 p-4 pb-8 sm:p-6">
+        <section class="rounded-2xl bg-white p-4 shadow-sm sm:p-5">
+          <h3 class="mb-4 font-black">Informations de réparation</h3>
+          <dl class="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
+            <div><dt class="text-slate-500">Panne signalée</dt><dd id="device-fault" class="mt-1 font-semibold"></dd></div>
+            <div><dt class="text-slate-500">Statut</dt><dd id="device-status" class="mt-1 font-semibold"></dd></div>
+            <div><dt class="text-slate-500">Priorité</dt><dd id="device-priority" class="mt-1 font-semibold"></dd></div>
+            <div><dt class="text-slate-500">Dépôt enregistré</dt><dd id="device-created" class="mt-1 font-semibold"></dd></div>
+            <div><dt class="text-slate-500">Dernière mise à jour</dt><dd id="device-updated" class="mt-1 font-semibold"></dd></div>
+            <div><dt class="text-slate-500">Prix convenu</dt><dd id="device-price" class="mt-1 font-semibold"></dd></div>
+          </dl>
+        </section>
+
+        <section class="rounded-2xl bg-white p-4 shadow-sm sm:p-5">
+          <h3 class="mb-3 font-black">Paiements</h3>
+          <div class="grid grid-cols-1 gap-3 text-sm sm:grid-cols-3">
+            <p><span class="block text-slate-500">Reçu en USD</span><strong id="device-paid-usd"></strong></p>
+            <p><span class="block text-slate-500">Reçu en FC</span><strong id="device-paid-cdf"></strong></p>
+            <p><span class="block text-slate-500">Solde restant</span><strong id="device-balance"></strong></p>
+          </div>
+        </section>
+
+        <div id="device-summary" class="rounded-2xl bg-teal-50 p-4 text-sm font-semibold text-teal-900"></div>
+
+        <form id="payment-form" class="space-y-3 rounded-2xl bg-white p-4 shadow-sm sm:p-5">
+          <h3 class="font-black">Enregistrer un paiement</h3>
+          <div class="flex gap-2">
+            <input id="payment-amount" type="number" min="0.01" step="0.01" inputmode="decimal" required
+              placeholder="Montant en dollars" aria-label="Montant du paiement"
+              class="min-w-0 flex-1 rounded-xl border border-slate-200 px-3 py-3">
+            <select id="payment-currency" aria-label="Devise du paiement" class="rounded-xl border border-slate-200 px-3 font-semibold">
+              <option value="USD" selected>USD $</option>
+              <option value="CDF">FC</option>
+            </select>
+          </div>
+          <button type="submit" class="w-full rounded-xl bg-teal-700 px-3 py-3 font-bold text-white">Enregistrer le paiement</button>
+          <p id="payment-message" role="status" class="text-sm"></p>
+        </form>
+
+        <section id="device-approval" class="hidden rounded-2xl bg-white p-4 shadow-sm sm:p-5">
+          <h3 class="mb-3 font-black">Acte de restitution et signature</h3>
+          <p id="device-approval-clause" class="text-sm text-slate-700"></p>
+          <p id="device-approval-date" class="mt-2 text-xs text-slate-500"></p>
+          <p class="mt-4 text-sm font-bold">Signature du client</p>
+          <img id="device-signature" alt="Signature du client" class="mt-2 hidden max-h-80 w-full rounded-xl border border-slate-200 bg-white object-contain p-2">
+          <p id="device-signature-missing" class="mt-3 hidden text-sm text-amber-700">La signature n’est pas disponible pour ce dossier.</p>
+        </section>
+      </div>
+  </section>
+
+  <dialog id="approval-dialog" class="w-[calc(100%-2rem)] max-w-md rounded-2xl p-5 shadow-xl backdrop:bg-slate-900/50">
+    <form method="dialog"><button class="float-right rounded-lg px-2 py-1 text-slate-500" aria-label="Fermer">✕</button></form>
+    <h2 class="text-lg font-black">Acte d’approbation</h2>
+    <p class="my-3 text-sm text-slate-600">Appareil testé et accepté par le client. Aucune réclamation ne sera acceptée après 48 heures.</p>
+    <p id="approval-device" class="mb-2 text-sm font-semibold"></p>
+    <canvas id="signature-canvas" width="640" height="240" class="w-full rounded-xl border-2 border-dashed border-slate-300 bg-white"></canvas>
+    <div class="mt-3 flex gap-2">
+      <button id="clear-signature" type="button" class="flex-1 rounded-xl bg-slate-100 px-3 py-3 font-semibold">Effacer</button>
+      <button id="save-approval" type="button" class="flex-1 rounded-xl bg-teal-700 px-3 py-3 font-bold text-white">Signer et restituer</button>
+    </div>
+    <p id="approval-message" role="status" class="mt-2 text-sm"></p>
+  </dialog>
+  </div>
+
+  <script src="/offline-store.js" defer></script>
+  <script src="/app.js" defer></script>
+</body>
+</html>

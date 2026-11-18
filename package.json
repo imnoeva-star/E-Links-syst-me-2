@@ -1,0 +1,30 @@
+{
+  "name": "atelier-express",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MVP mobile-first pour un atelier de réparation de téléphones",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "build": "tailwindcss -i ./public/styles.src.css -o ./public/styles.css --minify",
+    "pretest": "npm run build",
+    "test": "node --test",
+    "db:migrate": "node scripts/migrate.js",
+    "create-user": "node scripts/create-user.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@neon/config": "^1.14.0",
+    "@neon/env": "^2.1.3",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "nodemailer": "^10.6.0",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.17"
+  }
+}

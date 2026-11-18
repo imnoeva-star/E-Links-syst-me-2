@@ -1,0 +1,32 @@
+require('dotenv').config();
+
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const { Client } = require('pg');
+
+async function main() {
+  const connectionString = process.env.DATABASE_URL_UNPOOLED;
+  if (!connectionString) {
+    throw new Error('DATABASE_URL_UNPOOLED est requis pour exécuter les migrations.');
+  }
+  const client = new Client({ connectionString, ssl: { rejectUnauthorized: true } });
+  await client.connect();
+  try {
+    const directory = path.join(__dirname, '..', 'migrations');
+    const files = (await fs.readdir(directory))
+      .filter((file) => /^\d{8}_.+\.sql$/.test(file))
+      .sort();
+    for (const file of files) {
+      console.log(`Application de ${file}…`);
+      await client.query(await fs.readFile(path.join(directory, file), 'utf8'));
+    }
+    console.log('Migrations terminées.');
+  } finally {
+    await client.end();
+  }
+}
+
+main().catch((error) => {
+  console.error(`Échec de migration (${error.code || 'erreur'}): ${error.message}`);
+  process.exitCode = 1;
+});

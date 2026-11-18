@@ -1,0 +1,5 @@
+node_modules/
+.env
+npm-debug.log*
+.neon
+/public/styles.css
