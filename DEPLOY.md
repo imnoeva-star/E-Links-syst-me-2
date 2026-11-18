@@ -20,7 +20,9 @@ Pour désactiver un compte, connecte-toi à PostgreSQL et passe `techniciens.act
 
 ## Créer le service Render
 
-Le fichier `render.yaml` configure le service Node, la compilation CSS locale et la sonde de disponibilité. Dans Render, renseigne les variables secrètes :
+Le fichier `render.yaml` configure le service Node sur le plan gratuit, la compilation CSS locale et la sonde de disponibilité. Render déconseille ce plan pour la production : le service s’endort après 15 minutes sans trafic et son redémarrage peut prendre environ une minute. Le système de fichiers du service est éphémère ; les données métier doivent rester dans Neon. Le SMTP sortant sur les ports 25, 465 et 587 est bloqué sur le plan gratuit, ce qui peut empêcher la récupération de compte par e-mail.
+
+Pour passer à un plan payant, modifie `plan` dans `render.yaml` et ajoute un moyen de paiement dans Render. Dans Render, renseigne les variables secrètes :
 
 - `DATABASE_URL` : URL pooled Neon destinée au trafic normal de l’application.
 - `DATABASE_URL_UNPOOLED` : URL directe Neon réservée aux migrations et à la création des comptes.

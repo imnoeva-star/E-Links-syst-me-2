@@ -2,6 +2,7 @@ services:
   - type: web
     name: atelier-express
     runtime: node
+    plan: free
     buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /readyz
