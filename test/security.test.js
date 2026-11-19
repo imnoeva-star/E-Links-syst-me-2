@@ -113,9 +113,10 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(introText, /Bonjour, \$\{displayName/);
   assert.match(introText, /async playWelcome\(name\)/);
   assert.doesNotMatch(introText, /<style>/);
+  assert.doesNotMatch(introText, /e-links-intro-caption|Chargement E-Links…/);
   const brandScene = introText.slice(
     introText.indexOf('<div class="e-links-intro-brand-scene"'),
-    introText.indexOf('<p class="e-links-intro-caption">'),
+    introText.indexOf('</div>\n          </div>'),
   );
   assert.equal((brandScene.match(/class="e-links-intro-bubble e-links-intro-brand-bubble/g) || []).length, 3);
   assert.match(
@@ -151,7 +152,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(pageHtml, /rel="apple-touch-icon" href="\/icon-192\.png"/);
   const serviceWorker = await fetch(`${baseUrl}/service-worker.js`);
   const serviceWorkerText = await serviceWorker.text();
-  assert.match(serviceWorkerText, /atelier-express-v12/);
+  assert.match(serviceWorkerText, /atelier-express-v13/);
   assert.match(serviceWorkerText, /offline-store\.js/);
   assert.match(serviceWorkerText, /icon-512\.png/);
 });

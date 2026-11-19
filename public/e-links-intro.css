@@ -106,16 +106,6 @@ e-links-intro[data-dismissed="true"] {
   100% { transform: rotate(360deg) translateX(124px) scale(.8); }
 }
 
-.e-links-intro-caption {
-  margin-top: -.25rem;
-  color: #64748b;
-  font-family: inherit;
-  font-size: .75rem;
-  font-weight: 700;
-  letter-spacing: .24em;
-  text-transform: uppercase;
-}
-
 .e-links-intro-greeting {
   margin: 0;
   color: #3b6fc8;

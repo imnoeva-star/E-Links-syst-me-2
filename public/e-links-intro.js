@@ -17,7 +17,6 @@
               <span class="e-links-intro-bubble e-links-intro-brand-bubble e-links-intro-sky"></span>
               <span class="e-links-intro-wordmark">E-Links</span>
             </div>
-            <p class="e-links-intro-caption">Chargement E-Links…</p>
           </div>
           <div class="e-links-intro-greeting-stage" hidden>
             <p class="e-links-intro-greeting" aria-hidden="true"></p>
@@ -34,6 +33,7 @@
       this.startedAt = performance.now();
       this.inert = false;
       this.dataset.dismissed = 'false';
+      this.announcement.textContent = '';
     }
 
     showBrand() {
@@ -45,12 +45,13 @@
       this.greetingStage.hidden = true;
       this.greetingElement.textContent = '';
       this.startedAt = performance.now();
-      this.announcement.textContent = 'Chargement E-Links';
+      this.announcement.textContent = '';
     }
 
     async playWelcome(name) {
       this.showBrand();
       await this.pause(500);
+      this.announcement.textContent = 'Bonjour';
       this.brandStage.hidden = true;
       this.greetingStage.hidden = false;
       const displayName = String(name || '').trim();
