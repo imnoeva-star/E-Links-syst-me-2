@@ -102,10 +102,16 @@ test('static app includes local production CSS and the technician login', async 
   assert.equal(css.status, 200);
   const cssText = await css.text();
   assert.match(cssText, /\.hidden\s*\{/);
+  assert.match(cssText, /#signature-canvas\s*\{[^}]*touch-action:\s*none/);
+  assert.match(cssText, /#signature-canvas\s*\{[^}]*height:\s*clamp\(180px,\s*30vh,\s*240px\)/);
   const script = await fetch(`${baseUrl}/app.js`);
   assert.equal(script.status, 200);
   const scriptText = await script.text();
   assert.match(scriptText, /playWelcome\(technician\.nom\)/);
+  assert.match(scriptText, /getCoalescedEvents/);
+  assert.match(scriptText, /quadraticCurveTo/);
+  assert.match(scriptText, /setPointerCapture\(event\.pointerId\)/);
+  assert.match(scriptText, /ResizeObserver\(resizeSignatureCanvas\)/);
   const introScript = await fetch(`${baseUrl}/e-links-intro.js`);
   assert.equal(introScript.status, 200);
   const introText = await introScript.text();
@@ -152,7 +158,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(pageHtml, /rel="apple-touch-icon" href="\/icon-192\.png"/);
   const serviceWorker = await fetch(`${baseUrl}/service-worker.js`);
   const serviceWorkerText = await serviceWorker.text();
-  assert.match(serviceWorkerText, /atelier-express-v13/);
+  assert.match(serviceWorkerText, /atelier-express-v14/);
   assert.match(serviceWorkerText, /offline-store\.js/);
   assert.match(serviceWorkerText, /icon-512\.png/);
 });

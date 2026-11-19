@@ -1646,44 +1646,142 @@ $('#payment-form').addEventListener('submit', async (event) => {
 const dialog = $('#approval-dialog');
 const canvas = $('#signature-canvas');
 const context = canvas.getContext('2d');
-let drawing = false;
+let drawingPointerId = null;
+let activeStroke = null;
+let signatureStrokes = [];
+let signatureSize = { width: 0, height: 0 };
 
 function canvasPoint(event) {
   const rect = canvas.getBoundingClientRect();
   return {
-    x: ((event.clientX - rect.left) / rect.width) * canvas.width,
-    y: ((event.clientY - rect.top) / rect.height) * canvas.height,
+    x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+    y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
   };
 }
 
+function signatureCanvasPoint(point) {
+  return { x: point.x * signatureSize.width, y: point.y * signatureSize.height };
+}
+
+function drawSignatureStroke(points) {
+  if (!points.length) return;
+  const first = signatureCanvasPoint(points[0]);
+  context.beginPath();
+  if (points.length === 1) {
+    context.arc(first.x, first.y, context.lineWidth / 2, 0, Math.PI * 2);
+    context.fill();
+    return;
+  }
+  context.moveTo(first.x, first.y);
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = signatureCanvasPoint(points[index - 1]);
+    const current = signatureCanvasPoint(points[index]);
+    context.quadraticCurveTo(previous.x, previous.y, (previous.x + current.x) / 2, (previous.y + current.y) / 2);
+  }
+  const last = signatureCanvasPoint(points[points.length - 1]);
+  context.lineTo(last.x, last.y);
+  context.stroke();
+}
+
+function resizeSignatureCanvas() {
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, 3);
+  const pixelWidth = Math.round(rect.width * pixelRatio);
+  const pixelHeight = Math.round(rect.height * pixelRatio);
+  signatureSize = { width: rect.width, height: rect.height };
+  if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+  if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  context.lineCap = 'round';
+  context.lineJoin = 'round';
+  context.lineWidth = 2.5;
+  context.strokeStyle = '#0f172a';
+  context.fillStyle = '#0f172a';
+  context.clearRect(0, 0, signatureSize.width, signatureSize.height);
+  signatureStrokes.forEach(drawSignatureStroke);
+  if (activeStroke) {
+    const points = activeStroke.points;
+    const previous = signatureCanvasPoint(points[points.length - 2] || points[points.length - 1]);
+    const current = signatureCanvasPoint(points[points.length - 1]);
+    activeStroke.lastMidpoint = {
+      x: (previous.x + current.x) / 2,
+      y: (previous.y + current.y) / 2,
+    };
+  }
+}
+
+function pointerSamples(event) {
+  const coalesced = event.getCoalescedEvents?.();
+  return coalesced && coalesced.length ? coalesced : [event];
+}
+
+function addSignaturePoint(event) {
+  const point = canvasPoint(event);
+  const previous = activeStroke.points[activeStroke.points.length - 1];
+  if (previous && Math.hypot(point.x - previous.x, point.y - previous.y) < 0.0001) return;
+  activeStroke.points.push(point);
+  const previousCanvasPoint = signatureCanvasPoint(previous);
+  const currentCanvasPoint = signatureCanvasPoint(point);
+  const midpoint = {
+    x: (previousCanvasPoint.x + currentCanvasPoint.x) / 2,
+    y: (previousCanvasPoint.y + currentCanvasPoint.y) / 2,
+  };
+  context.beginPath();
+  context.moveTo(activeStroke.lastMidpoint.x, activeStroke.lastMidpoint.y);
+  context.quadraticCurveTo(previousCanvasPoint.x, previousCanvasPoint.y, midpoint.x, midpoint.y);
+  context.stroke();
+  activeStroke.lastMidpoint = midpoint;
+}
+
+function finishSignatureStroke(event) {
+  if (drawingPointerId === null || (event && event.pointerId !== drawingPointerId)) return;
+  if (event) pointerSamples(event).forEach(addSignaturePoint);
+  const last = signatureCanvasPoint(activeStroke.points[activeStroke.points.length - 1]);
+  context.beginPath();
+  context.moveTo(activeStroke.lastMidpoint.x, activeStroke.lastMidpoint.y);
+  context.quadraticCurveTo(last.x, last.y, last.x, last.y);
+  context.stroke();
+  drawingPointerId = null;
+  activeStroke = null;
+}
+
 canvas.addEventListener('pointerdown', (event) => {
-  drawing = true;
+  if (!event.isPrimary || drawingPointerId !== null || (event.pointerType === 'mouse' && event.button !== 0)) return;
+  event.preventDefault();
+  resizeSignatureCanvas();
+  drawingPointerId = event.pointerId;
+  const point = canvasPoint(event);
+  activeStroke = { points: [point], lastMidpoint: signatureCanvasPoint(point) };
+  signatureStrokes.push(activeStroke.points);
+  context.beginPath();
+  const start = signatureCanvasPoint(point);
+  context.arc(start.x, start.y, context.lineWidth / 2, 0, Math.PI * 2);
+  context.fill();
   state.hasSignature = true;
   canvas.setPointerCapture(event.pointerId);
-  const point = canvasPoint(event);
-  context.beginPath();
-  context.moveTo(point.x, point.y);
 });
 canvas.addEventListener('pointermove', (event) => {
-  if (!drawing) return;
-  const point = canvasPoint(event);
-  context.lineWidth = 4;
-  context.lineCap = 'round';
-  context.strokeStyle = '#0f172a';
-  context.lineTo(point.x, point.y);
-  context.stroke();
+  if (event.pointerId !== drawingPointerId) return;
+  pointerSamples(event).forEach(addSignaturePoint);
 });
-canvas.addEventListener('pointerup', () => { drawing = false; });
-canvas.addEventListener('pointercancel', () => { drawing = false; });
+canvas.addEventListener('pointerup', (event) => finishSignatureStroke(event));
+canvas.addEventListener('pointercancel', (event) => finishSignatureStroke(event));
+canvas.addEventListener('lostpointercapture', (event) => finishSignatureStroke(event));
+new ResizeObserver(resizeSignatureCanvas).observe(canvas);
+window.addEventListener('resize', resizeSignatureCanvas);
 
 function openApproval(device) {
   state.approvalId = device.id;
   state.approvalVersion = device.updated_at;
   state.hasSignature = false;
-  context.clearRect(0, 0, canvas.width, canvas.height);
+  drawingPointerId = null;
+  activeStroke = null;
+  signatureStrokes = [];
   $('#approval-device').textContent = `${device.marque} ${device.modele} — ${device.telephone}`;
   $('#approval-message').textContent = '';
   dialog.showModal();
+  window.requestAnimationFrame(resizeSignatureCanvas);
 }
 
 function updatePaymentPlaceholder() {
@@ -1695,7 +1793,10 @@ $('#payment-currency').addEventListener('change', updatePaymentPlaceholder);
 updatePaymentPlaceholder();
 
 $('#clear-signature').addEventListener('click', () => {
-  context.clearRect(0, 0, canvas.width, canvas.height);
+  signatureStrokes = [];
+  drawingPointerId = null;
+  activeStroke = null;
+  context.clearRect(0, 0, signatureSize.width, signatureSize.height);
   state.hasSignature = false;
 });
 
