@@ -164,6 +164,14 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(serviceWorkerText, /icon-512\.png/);
 });
 
+test('Render blueprint deploys commits automatically', () => {
+  const renderYaml = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'render.yaml'),
+    'utf8',
+  );
+  assert.match(renderYaml, /^\s+autoDeployTrigger:\s*commit\s*$/m);
+});
+
 test('business API requires an authenticated technician and disables caching', async () => {
   await startServer();
   const response = await fetch(`${baseUrl}/api/appareils`);
