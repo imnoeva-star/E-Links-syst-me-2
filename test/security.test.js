@@ -76,6 +76,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(html, /href="\/e-links-intro\.css"/);
   assert.match(html, /src="\/offline-store\.js"/);
   assert.match(html, /id="offline-status"/);
+  assert.match(html, /id="dashboard-sync-note"/);
   assert.doesNotMatch(html, /Ravi de vous revoir/);
   assert.match(html, /id="login-form"/);
   assert.match(html, /id="registration-form"/);
@@ -158,7 +159,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(pageHtml, /rel="apple-touch-icon" href="\/icon-192\.png"/);
   const serviceWorker = await fetch(`${baseUrl}/service-worker.js`);
   const serviceWorkerText = await serviceWorker.text();
-  assert.match(serviceWorkerText, /atelier-express-v14/);
+  assert.match(serviceWorkerText, /atelier-express-v15/);
   assert.match(serviceWorkerText, /offline-store\.js/);
   assert.match(serviceWorkerText, /icon-512\.png/);
 });

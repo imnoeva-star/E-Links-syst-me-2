@@ -718,6 +718,53 @@ async function finishSyncedOperation(operation, data) {
   if (device) await OfflineStore.write('appareils', { ...device, pending_sync: remaining });
 }
 
+async function reconcileStatusConflict(operation) {
+  if (operation.method !== 'PATCH') return { resolved: false };
+  const deviceMatch = operation.url.match(/^\/api\/appareils\/([0-9a-f-]+)$/i);
+  if (!deviceMatch) return { resolved: false };
+  const changes = JSON.parse(operation.body || '{}');
+  if (
+    Object.keys(changes).length !== 1 ||
+    !Object.prototype.hasOwnProperty.call(changes, 'statut')
+  ) {
+    return { resolved: false };
+  }
+  const targetIndex = statusOrder.indexOf(changes.statut);
+  if (targetIndex < 1 || targetIndex > statusOrder.indexOf('PRET')) {
+    return { resolved: false };
+  }
+
+  const currentResponse = await fetch(operation.url, {
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json' },
+  });
+  if (!currentResponse.ok) return { resolved: false };
+  const currentDevice = await currentResponse.json();
+  const currentIndex = statusOrder.indexOf(currentDevice.statut);
+  if (currentIndex < targetIndex) {
+    if (currentIndex + 1 !== targetIndex || !currentDevice.updated_at) {
+      return { resolved: false };
+    }
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(operation.headers || {}),
+      'X-Record-Version': currentDevice.updated_at,
+    };
+    const retryResponse = await fetch(operation.url, {
+      method: operation.method,
+      credentials: 'same-origin',
+      headers,
+      body: operation.body,
+    });
+    if (!retryResponse.ok) return { resolved: false, response: retryResponse };
+    return {
+      resolved: true,
+      data: retryResponse.status === 204 ? null : await retryResponse.json(),
+    };
+  }
+  return { resolved: true, data: currentDevice };
+}
+
 async function syncPendingOperations() {
   if (state.isSyncing || state.isOffline || !navigator.onLine || !state.technician) return;
   state.isSyncing = true;
@@ -745,6 +792,15 @@ async function syncPendingOperations() {
         break;
       }
       if (!response.ok) {
+        if (response.status === 409) {
+          const reconciliation = await reconcileStatusConflict(currentOperation);
+          if (reconciliation.resolved) {
+            await finishSyncedOperation(currentOperation, reconciliation.data);
+            await OfflineStore.remove('operations', currentOperation.id);
+            continue;
+          }
+          if (reconciliation.response) response = reconciliation.response;
+        }
         const body = await response.json().catch(() => ({}));
         if (response.status === 401) {
           await OfflineStore.clearSession();
@@ -1124,7 +1180,11 @@ $('#logout').addEventListener('click', async () => {
 });
 
 async function loadDashboard() {
-  const data = await request('/api/dashboard');
+  const queue = await OfflineStore.getQueue();
+  const hasPendingOperations = queue.length > 0;
+  const data = hasPendingOperations ? await offlineDashboard() : await request('/api/dashboard');
+  const syncNote = $('#dashboard-sync-note');
+  syncNote.classList.toggle('hidden', !hasPendingOperations);
   $('#revenue-usd').textContent = formatMoney(data.chiffre_semaine_usd, 'USD');
   $('#revenue-cdf').textContent = formatMoney(data.chiffre_semaine_cdf, 'CDF');
   renderRevenueCharts(data.encaissements_journaliers);
