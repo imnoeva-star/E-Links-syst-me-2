@@ -772,27 +772,42 @@ async function syncPendingOperations() {
   let interrupted = false;
   try {
     const queue = await OfflineStore.getQueue();
-    const blockedDeviceIds = new Set(queue
-      .filter((operation) => operation.blocked)
-      .map((operation) => operation.deviceId));
+    const blockedDeviceIds = new Set();
     for (const operation of queue) {
       const currentOperation = await OfflineStore.get('operations', operation.id);
-      if (!currentOperation || currentOperation.blocked || blockedDeviceIds.has(currentOperation.deviceId)) continue;
+      if (!currentOperation || blockedDeviceIds.has(currentOperation.deviceId)) continue;
       let response;
-      try {
-        response = await fetch(currentOperation.url, {
-          method: currentOperation.method,
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json', ...(currentOperation.headers || {}) },
-          body: currentOperation.method === 'DELETE' ? undefined : currentOperation.body,
-        });
-      } catch (error) {
-        setOfflineMode(true);
-        interrupted = true;
-        break;
+      if (currentOperation.blocked) {
+        const isVersionConflict = /ce dossier a changé sur un autre appareil/i.test(currentOperation.error || '');
+        if (isVersionConflict) {
+          const reconciliation = await reconcileStatusConflict(currentOperation);
+          if (reconciliation.resolved) {
+            await finishSyncedOperation(currentOperation, reconciliation.data);
+            await OfflineStore.remove('operations', currentOperation.id);
+            continue;
+          }
+          response = reconciliation.response;
+        }
+        if (!response) {
+          if (currentOperation.deviceId) blockedDeviceIds.add(currentOperation.deviceId);
+          continue;
+        }
+      } else {
+        try {
+          response = await fetch(currentOperation.url, {
+            method: currentOperation.method,
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', ...(currentOperation.headers || {}) },
+            body: currentOperation.method === 'DELETE' ? undefined : currentOperation.body,
+          });
+        } catch (error) {
+          setOfflineMode(true);
+          interrupted = true;
+          break;
+        }
       }
       if (!response.ok) {
-        if (response.status === 409) {
+        if (response.status === 409 && !currentOperation.blocked) {
           const reconciliation = await reconcileStatusConflict(currentOperation);
           if (reconciliation.resolved) {
             await finishSyncedOperation(currentOperation, reconciliation.data);
