@@ -718,51 +718,74 @@ async function finishSyncedOperation(operation, data) {
   if (device) await OfflineStore.write('appareils', { ...device, pending_sync: remaining });
 }
 
-async function reconcileStatusConflict(operation) {
-  if (operation.method !== 'PATCH') return { resolved: false };
-  const deviceMatch = operation.url.match(/^\/api\/appareils\/([0-9a-f-]+)$/i);
-  if (!deviceMatch) return { resolved: false };
-  const changes = JSON.parse(operation.body || '{}');
-  if (
-    Object.keys(changes).length !== 1 ||
-    !Object.prototype.hasOwnProperty.call(changes, 'statut')
-  ) {
-    return { resolved: false };
-  }
-  const targetIndex = statusOrder.indexOf(changes.statut);
-  if (targetIndex < 1 || targetIndex > statusOrder.indexOf('PRET')) {
-    return { resolved: false };
+async function reconcileVersionConflict(operation) {
+  const approvalMatch = operation.url.match(/^\/api\/appareils\/([0-9a-f-]+)\/approbation$/i);
+  const statusMatch = operation.url.match(/^\/api\/appareils\/([0-9a-f-]+)$/i);
+  const deviceId = approvalMatch ? approvalMatch[1] : statusMatch && statusMatch[1];
+  if (!deviceId || !['PATCH', 'POST'].includes(operation.method)) return { resolved: false };
+  const body = JSON.parse(operation.body || '{}');
+  if (approvalMatch) {
+    if (
+      operation.method !== 'POST' ||
+      typeof body.signature_data !== 'string' ||
+      !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(body.signature_data)
+    ) {
+      return { resolved: false };
+    }
+  } else {
+    if (
+      operation.method !== 'PATCH' ||
+      Object.keys(body).length !== 1 ||
+      !Object.prototype.hasOwnProperty.call(body, 'statut')
+    ) {
+      return { resolved: false };
+    }
+    const targetIndex = statusOrder.indexOf(body.statut);
+    if (targetIndex < 1 || targetIndex > statusOrder.indexOf('PRET')) {
+      return { resolved: false };
+    }
   }
 
-  const currentResponse = await fetch(operation.url, {
+  const deviceUrl = `/api/appareils/${deviceId}`;
+  const currentResponse = await fetch(deviceUrl, {
     credentials: 'same-origin',
     headers: { Accept: 'application/json' },
   });
   if (!currentResponse.ok) return { resolved: false };
   const currentDevice = await currentResponse.json();
-  const currentIndex = statusOrder.indexOf(currentDevice.statut);
-  if (currentIndex < targetIndex) {
-    if (currentIndex + 1 !== targetIndex || !currentDevice.updated_at) {
+  if (approvalMatch) {
+    if (
+      currentDevice.statut === 'LIVRE' &&
+      currentDevice.acte_valide &&
+      currentDevice.signature_data === body.signature_data
+    ) {
+      return { resolved: true, data: currentDevice };
+    }
+    if (currentDevice.statut !== 'PRET' || currentDevice.acte_valide) {
       return { resolved: false };
     }
-    const headers = {
+  } else {
+    const targetIndex = statusOrder.indexOf(body.statut);
+    const currentIndex = statusOrder.indexOf(currentDevice.statut);
+    if (currentIndex >= targetIndex) return { resolved: true, data: currentDevice };
+    if (currentIndex + 1 !== targetIndex) return { resolved: false };
+  }
+  if (!currentDevice.updated_at) return { resolved: false };
+  const retryResponse = await fetch(operation.url, {
+    method: operation.method,
+    credentials: 'same-origin',
+    headers: {
       'Content-Type': 'application/json',
       ...(operation.headers || {}),
       'X-Record-Version': currentDevice.updated_at,
-    };
-    const retryResponse = await fetch(operation.url, {
-      method: operation.method,
-      credentials: 'same-origin',
-      headers,
-      body: operation.body,
-    });
-    if (!retryResponse.ok) return { resolved: false, response: retryResponse };
-    return {
-      resolved: true,
-      data: retryResponse.status === 204 ? null : await retryResponse.json(),
-    };
-  }
-  return { resolved: true, data: currentDevice };
+    },
+    body: operation.body,
+  });
+  if (!retryResponse.ok) return { resolved: false, response: retryResponse };
+  return {
+    resolved: true,
+    data: retryResponse.status === 204 ? null : await retryResponse.json(),
+  };
 }
 
 async function syncPendingOperations() {
@@ -780,7 +803,7 @@ async function syncPendingOperations() {
       if (currentOperation.blocked) {
         const isVersionConflict = /ce dossier a changé sur un autre appareil/i.test(currentOperation.error || '');
         if (isVersionConflict) {
-          const reconciliation = await reconcileStatusConflict(currentOperation);
+          const reconciliation = await reconcileVersionConflict(currentOperation);
           if (reconciliation.resolved) {
             await finishSyncedOperation(currentOperation, reconciliation.data);
             await OfflineStore.remove('operations', currentOperation.id);
@@ -808,7 +831,7 @@ async function syncPendingOperations() {
       }
       if (!response.ok) {
         if (response.status === 409 && !currentOperation.blocked) {
-          const reconciliation = await reconcileStatusConflict(currentOperation);
+          const reconciliation = await reconcileVersionConflict(currentOperation);
           if (reconciliation.resolved) {
             await finishSyncedOperation(currentOperation, reconciliation.data);
             await OfflineStore.remove('operations', currentOperation.id);
