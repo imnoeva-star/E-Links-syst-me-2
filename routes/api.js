@@ -8,6 +8,12 @@ const STATUTS = new Set(['DEPOT', 'EN_COURS', 'PRET', 'LIVRE']);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CLAUSE_SORTIE =
   'Appareil testé et accepté par le client. Aucune réclamation ne sera acceptée après 48 heures.';
+const REPORT_PERIODS = {
+  day: { range: 'day', bucket: 'hour', step: 'hour', format: 'HH24' },
+  week: { range: 'week', bucket: 'day', step: 'day', format: 'YYYY-MM-DD' },
+  month: { range: 'month', bucket: 'day', step: 'day', format: 'YYYY-MM-DD' },
+  year: { range: 'year', bucket: 'month', step: 'month', format: 'YYYY-MM' },
+};
 
 function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
@@ -154,6 +160,64 @@ router.get('/clients', async (req, res, next) => {
       [`%${telephone}%`],
     );
     res.json(result.rows);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/reports/revenue', async (req, res, next) => {
+  const periodName = req.query.period;
+  if (
+    typeof periodName !== 'string' ||
+    !Object.prototype.hasOwnProperty.call(REPORT_PERIODS, periodName)
+  ) {
+    return res.status(400).json({ erreur: 'Période de bilan invalide.' });
+  }
+  const period = REPORT_PERIODS[periodName];
+
+  try {
+    const result = await db.query(`
+      WITH local_now AS (
+        SELECT NOW() AT TIME ZONE 'Africa/Kinshasa' AS instant_local
+      ),
+      period_bounds AS (
+        SELECT
+          date_trunc('${period.range}', instant_local) AS start_local,
+          date_trunc('${period.range}', instant_local) + INTERVAL '1 ${period.range}' AS end_local
+        FROM local_now
+      ),
+      buckets AS (
+        SELECT generate_series(
+          period_bounds.start_local,
+          period_bounds.end_local - INTERVAL '1 ${period.step}',
+          INTERVAL '1 ${period.step}'
+        ) AS bucket
+        FROM period_bounds
+      ),
+      revenue AS (
+        SELECT
+          date_trunc('${period.bucket}', p.created_at AT TIME ZONE 'Africa/Kinshasa') AS bucket,
+          SUM(p.montant) FILTER (WHERE p.devise = 'USD') AS usd,
+          SUM(p.montant) FILTER (WHERE p.devise = 'CDF') AS cdf
+        FROM paiements p
+        JOIN appareils_reparation a ON a.id = p.appareil_id
+        JOIN actes_approbation acte ON acte.appareil_id = a.id
+        CROSS JOIN period_bounds
+        WHERE a.statut = 'LIVRE'
+          AND a.archived_at IS NULL
+          AND p.created_at >= (period_bounds.start_local AT TIME ZONE 'Africa/Kinshasa')
+          AND p.created_at < (period_bounds.end_local AT TIME ZONE 'Africa/Kinshasa')
+        GROUP BY 1
+      )
+      SELECT
+        to_char(buckets.bucket, '${period.format}') AS bucket,
+        COALESCE(revenue.usd, 0) AS usd,
+        COALESCE(revenue.cdf, 0) AS cdf
+      FROM buckets
+      LEFT JOIN revenue USING (bucket)
+      ORDER BY buckets.bucket
+    `);
+    res.json({ period: periodName, points: result.rows });
   } catch (error) {
     next(error);
   }

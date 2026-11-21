@@ -77,6 +77,10 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(html, /src="\/offline-store\.js"/);
   assert.match(html, /id="offline-status"/);
   assert.match(html, /id="dashboard-sync-note"/);
+  assert.match(html, /data-page="report"/);
+  assert.match(html, /id="page-report"/);
+  assert.match(html, /data-report-period="year"/);
+  assert.match(html, /id="report-donut"/);
   assert.doesNotMatch(html, /Ravi de vous revoir/);
   assert.match(html, /id="login-form"/);
   assert.match(html, /id="registration-form"/);
@@ -159,7 +163,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(pageHtml, /rel="apple-touch-icon" href="\/icon-192\.png"/);
   const serviceWorker = await fetch(`${baseUrl}/service-worker.js`);
   const serviceWorkerText = await serviceWorker.text();
-  assert.match(serviceWorkerText, /atelier-express-v16/);
+  assert.match(serviceWorkerText, /atelier-express-v17/);
   assert.match(serviceWorkerText, /offline-store\.js/);
   assert.match(serviceWorkerText, /icon-512\.png/);
 });
@@ -180,6 +184,59 @@ test('business API requires an authenticated technician and disables caching', a
   const snapshot = await fetch(`${baseUrl}/api/offline/snapshot`);
   assert.equal(snapshot.status, 401);
   assert.equal(snapshot.headers.get('cache-control'), 'no-store');
+});
+
+test('revenue reports validate periods and include only delivered approved repairs', async () => {
+  await startServer();
+  const originalQuery = db.query;
+  const token = crypto.randomBytes(32).toString('hex');
+  const reportQueries = [];
+  db.query = async (sql) => {
+    if (sql.includes('sessions_techniciens')) {
+      return {
+        rows: [{ id: '00000000-0000-4000-8000-000000000001', nom: 'Test', email: 'test@example.invalid', role: 'ADMIN' }],
+        rowCount: 1,
+      };
+    }
+    if (sql.includes('WITH local_now AS')) {
+      reportQueries.push(sql);
+      return { rows: [], rowCount: 0 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  try {
+    for (const period of ['quarter', 'constructor', 'toString']) {
+      const invalid = await fetch(`${baseUrl}/api/reports/revenue?period=${period}`, {
+        headers: { Cookie: `${SESSION_COOKIE}=${token}` },
+      });
+      assert.equal(invalid.status, 400);
+    }
+
+    const periods = [
+      ['day', "INTERVAL '1 hour'"],
+      ['week', "INTERVAL '1 day'"],
+      ['month', "INTERVAL '1 day'"],
+      ['year', "INTERVAL '1 month'"],
+    ];
+    for (const [period, interval] of periods) {
+      const response = await fetch(`${baseUrl}/api/reports/revenue?period=${period}`, {
+        headers: { Cookie: `${SESSION_COOKIE}=${token}` },
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { period, points: [] });
+      assert.ok(reportQueries[reportQueries.length - 1].includes(interval));
+    }
+    assert.equal(reportQueries.length, periods.length);
+    for (const sql of reportQueries) {
+      assert.match(sql, /JOIN actes_approbation/);
+      assert.match(sql, /a\.statut = 'LIVRE'/);
+      assert.match(sql, /a\.archived_at IS NULL/);
+      assert.match(sql, /Africa\/Kinshasa/);
+      assert.match(sql, /generate_series/);
+    }
+  } finally {
+    db.query = originalQuery;
+  }
 });
 
 test('stale offline changes are rejected when another device changed the repair', async () => {

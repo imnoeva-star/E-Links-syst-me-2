@@ -20,9 +20,13 @@ const state = {
   offlineStorageError: null,
   lastSnapshotAt: 0,
   technician: null,
+  reportPeriod: 'week',
+  reportCurrency: 'USD',
+  reportData: null,
 };
 const pageTitles = {
   dashboard: 'Tableau de bord',
+  report: 'Bilan',
   new: 'Nouveau dépôt',
   waiting: 'Salle d’attente',
   archive: 'Archives',
@@ -59,6 +63,7 @@ function showPage(name, updateUrl = true, loadData = true) {
 
 function loadPageData(page) {
   if (page === 'dashboard') return loadDashboard();
+  if (page === 'report') return loadRevenueReport();
   if (page === 'waiting' || page === 'archive') return loadDevices(page);
   return Promise.resolve();
 }
@@ -122,6 +127,20 @@ document.addEventListener('keydown', (event) => {
 
 document.querySelectorAll('[data-page]')
   .forEach((button) => button.addEventListener('click', () => showPage(button.dataset.page)));
+document.querySelectorAll('[data-report-period]').forEach((button) => {
+  button.addEventListener('click', () => {
+    state.reportPeriod = button.dataset.reportPeriod;
+    updateReportControls();
+    loadRevenueReport().catch(showConnectionError);
+  });
+});
+document.querySelectorAll('[data-report-currency]').forEach((button) => {
+  button.addEventListener('click', () => {
+    state.reportCurrency = button.dataset.reportCurrency;
+    updateReportControls();
+    if (state.reportData) renderRevenueReport(state.reportData);
+  });
+});
 window.addEventListener('hashchange', () => showPage(window.location.hash.slice(1), false));
 
 function deviceSearchText(device) {
@@ -139,15 +158,88 @@ function normalizedPhone(value) {
   return String(value || '').replace(/\D/g, '');
 }
 
-function kinshasaDateKey(value) {
+function kinshasaDateParts(value) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Africa/Kinshasa',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
+    hour: '2-digit',
+    hourCycle: 'h23',
   }).formatToParts(new Date(value));
-  const part = (name) => parts.find((item) => item.type === name).value;
-  return `${part('year')}-${part('month')}-${part('day')}`;
+  return Object.fromEntries(parts.map((part) => [part.type, part.value]));
+}
+
+function kinshasaDateKey(value) {
+  const parts = kinshasaDateParts(value);
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function reportBuckets(period, now = new Date()) {
+  const current = kinshasaDateParts(now);
+  const year = Number(current.year);
+  const month = Number(current.month);
+  const day = Number(current.day);
+
+  if (period === 'day') {
+    return Array.from({ length: 24 }, (_, hour) => String(hour).padStart(2, '0'));
+  }
+  if (period === 'year') {
+    return Array.from({ length: 12 }, (_, index) =>
+      `${current.year}-${String(index + 1).padStart(2, '0')}`);
+  }
+
+  const start = new Date(Date.UTC(year, month - 1, day));
+  if (period === 'week') start.setUTCDate(start.getUTCDate() - ((start.getUTCDay() + 6) % 7));
+  else start.setUTCDate(1);
+
+  const count = period === 'week' ? 7 : new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return Array.from({ length: count }, (_, index) => {
+    const date = new Date(start);
+    date.setUTCDate(start.getUTCDate() + index);
+    return date.toISOString().slice(0, 10);
+  });
+}
+
+async function offlineRevenueReport(period) {
+  if (!['day', 'week', 'month', 'year'].includes(period)) {
+    throw new Error('Période de bilan invalide.');
+  }
+  const [devices, payments] = await Promise.all([
+    OfflineStore.all('appareils'),
+    OfflineStore.all('paiements'),
+  ]);
+  const deliveredIds = new Set(devices
+    .filter((device) => !device.archived_at && device.statut === 'LIVRE' && device.acte_valide)
+    .map((device) => device.id));
+  const buckets = reportBuckets(period);
+  const totals = new Map(buckets.map((bucket) => [bucket, { usd: 0, cdf: 0 }]));
+  const todayKey = kinshasaDateKey(new Date());
+
+  payments.forEach((payment) => {
+    if (!deliveredIds.has(payment.appareil_id)) return;
+    const parts = kinshasaDateParts(payment.created_at);
+    const dateKey = `${parts.year}-${parts.month}-${parts.day}`;
+    if (period === 'day' && dateKey !== todayKey) return;
+    const bucket = period === 'day'
+      ? parts.hour
+      : period === 'year'
+        ? `${parts.year}-${parts.month}`
+        : dateKey;
+    const entry = totals.get(bucket);
+    const amount = Math.round(Number(payment.montant) * 100);
+    if (!entry || !Number.isFinite(amount) || amount <= 0) return;
+    if (payment.devise === 'USD') entry.usd += amount;
+    else if (payment.devise === 'CDF') entry.cdf += amount;
+  });
+
+  return {
+    period,
+    points: buckets.map((bucket) => {
+      const total = totals.get(bucket);
+      return { bucket, usd: total.usd / 100, cdf: total.cdf / 100 };
+    }),
+  };
 }
 
 async function offlineDashboard() {
@@ -217,12 +309,15 @@ async function offlineRequest(url, options = {}) {
   }
   if (method === 'GET') {
     if (
-      ['/api/dashboard', '/api/clients', '/api/appareils'].includes(pathname) &&
+      ['/api/dashboard', '/api/reports/revenue', '/api/clients', '/api/appareils'].includes(pathname) &&
       !(await OfflineStore.get('meta', 'captured_at'))
     ) {
       throw new Error('Ouvrez l’application une fois en ligne pour préparer les données hors connexion.');
     }
     if (pathname === '/api/dashboard') return offlineDashboard();
+    if (pathname === '/api/reports/revenue') {
+      return offlineRevenueReport(parsedUrl.searchParams.get('period'));
+    }
     if (pathname === '/api/clients') {
       const telephone = (parsedUrl.searchParams.get('telephone') || '').replace(/\D/g, '');
       if (telephone.length < 3) return [];
@@ -1244,6 +1339,147 @@ async function loadDashboard() {
       priorityList.append(li);
     });
   }
+}
+
+function updateReportControls() {
+  document.querySelectorAll('[data-report-period]').forEach((button) => {
+    const active = button.dataset.reportPeriod === state.reportPeriod;
+    button.setAttribute('aria-pressed', String(active));
+    button.classList.toggle('bg-teal-700', active);
+    button.classList.toggle('text-white', active);
+    button.classList.toggle('text-slate-600', !active);
+  });
+  document.querySelectorAll('[data-report-currency]').forEach((button) => {
+    const active = button.dataset.reportCurrency === state.reportCurrency;
+    button.setAttribute('aria-pressed', String(active));
+    button.classList.toggle('bg-white', active);
+    button.classList.toggle('shadow-sm', active);
+    button.classList.toggle('text-teal-800', active);
+    button.classList.toggle('text-slate-600', !active);
+  });
+}
+
+function reportBucketLabel(bucket, period) {
+  if (period === 'day') return `${bucket} h`;
+  if (period === 'year') {
+    return new Date(`${bucket}-01T12:00:00Z`).toLocaleDateString('fr-FR', {
+      month: 'long',
+      timeZone: 'Africa/Kinshasa',
+    });
+  }
+  const date = new Date(`${bucket}T12:00:00Z`);
+  const options = period === 'week'
+    ? { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Africa/Kinshasa' }
+    : { day: 'numeric', month: 'short', timeZone: 'Africa/Kinshasa' };
+  return new Intl.DateTimeFormat('fr-FR', options).format(date);
+}
+
+function renderRevenueReport(data) {
+  state.reportData = data;
+  const currency = state.reportCurrency;
+  const field = currency.toLowerCase();
+  const points = Array.isArray(data.points) ? data.points : [];
+  const total = points.reduce((sum, point) => sum + Number(point[field] || 0), 0);
+  const labels = {
+    day: 'Aujourd’hui',
+    week: 'Cette semaine',
+    month: 'Ce mois-ci',
+    year: 'Cette année',
+  };
+  const groupLabels = {
+    day: 'Détail par heure',
+    week: 'Détail par jour',
+    month: 'Détail par jour',
+    year: 'Détail par mois',
+  };
+  const chart = $('#report-donut');
+  const svgNamespace = 'http://www.w3.org/2000/svg';
+  const colors = [
+    '#14b8a6', '#f59e0b', '#8b5cf6', '#f97316', '#3b82f6', '#ec4899',
+    '#84cc16', '#06b6d4', '#ef4444', '#a855f7', '#22c55e', '#eab308',
+  ];
+  const radius = 78;
+  const circumference = 2 * Math.PI * radius;
+  const track = document.createElementNS(svgNamespace, 'circle');
+  track.setAttribute('cx', '110');
+  track.setAttribute('cy', '110');
+  track.setAttribute('r', String(radius));
+  track.setAttribute('fill', 'none');
+  track.setAttribute('stroke', '#e2e8f0');
+  track.setAttribute('stroke-width', '24');
+  chart.replaceChildren(track);
+
+  const positivePoints = points
+    .map((point) => ({ ...point, amount: Number(point[field] || 0) }))
+    .filter((point) => point.amount > 0);
+  let offset = 0;
+  positivePoints.forEach((point, index) => {
+    const segmentLength = (point.amount / total) * circumference;
+    const visibleLength = Math.max(0, segmentLength - 2);
+    const segment = document.createElementNS(svgNamespace, 'circle');
+    segment.setAttribute('cx', '110');
+    segment.setAttribute('cy', '110');
+    segment.setAttribute('r', String(radius));
+    segment.setAttribute('fill', 'none');
+    segment.setAttribute('stroke', colors[index % colors.length]);
+    segment.setAttribute('stroke-width', '24');
+    segment.setAttribute('stroke-linecap', 'round');
+    segment.setAttribute('stroke-dasharray', `${visibleLength} ${circumference - visibleLength}`);
+    segment.setAttribute('stroke-dashoffset', String(-offset));
+    segment.setAttribute('transform', 'rotate(-90 110 110)');
+    segment.setAttribute('data-revenue-segment', '');
+    chart.append(segment);
+    offset += segmentLength;
+  });
+
+  $('#report-total').textContent = formatMoney(total, currency);
+  $('#report-currency-label').textContent = currency;
+  $('#report-range').textContent = labels[state.reportPeriod];
+  $('#report-breakdown-title').textContent = groupLabels[state.reportPeriod];
+  $('#report-empty').classList.toggle('hidden', total > 0);
+  chart.setAttribute(
+    'aria-label',
+    `${labels[state.reportPeriod]} : ${formatMoney(total, currency)} répartis par période`,
+  );
+
+  const legend = $('#report-legend');
+  legend.replaceChildren();
+  positivePoints.forEach((point, index) => {
+    const item = document.createElement('li');
+    item.className = 'flex items-center justify-between gap-2 rounded-lg bg-slate-50 p-2';
+    const labelGroup = document.createElement('span');
+    labelGroup.className = 'flex min-w-0 items-center gap-2';
+    const marker = document.createElementNS(svgNamespace, 'svg');
+    marker.setAttribute('viewBox', '0 0 12 12');
+    marker.setAttribute('class', 'h-3 w-3 shrink-0');
+    marker.setAttribute('aria-hidden', 'true');
+    const dot = document.createElementNS(svgNamespace, 'circle');
+    dot.setAttribute('cx', '6');
+    dot.setAttribute('cy', '6');
+    dot.setAttribute('r', '5');
+    dot.setAttribute('fill', colors[index % colors.length]);
+    marker.append(dot);
+    const label = document.createElement('span');
+    label.className = 'truncate text-slate-600';
+    label.textContent = reportBucketLabel(point.bucket, state.reportPeriod);
+    labelGroup.append(marker, label);
+    const amount = document.createElement('strong');
+    amount.className = 'shrink-0 text-right text-slate-900';
+    amount.textContent = formatMoney(point.amount, currency);
+    item.append(labelGroup, amount);
+    legend.append(item);
+  });
+}
+
+async function loadRevenueReport() {
+  const period = state.reportPeriod;
+  const queue = await OfflineStore.getQueue();
+  const data = queue.length
+    ? await offlineRevenueReport(period)
+    : await request(`/api/reports/revenue?period=${encodeURIComponent(period)}`);
+  if (period !== state.reportPeriod) return;
+  $('#report-sync-note').classList.toggle('hidden', queue.length === 0);
+  renderRevenueReport(data);
 }
 
 function renderRevenueCharts(dailyRevenue) {
