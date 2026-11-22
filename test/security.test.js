@@ -16,6 +16,14 @@ const {
 
 let server;
 let baseUrl;
+const AUTHENTICATED_TECHNICIAN = {
+  id: '00000000-0000-4000-8000-000000000001',
+  account_id: '00000000-0000-4000-8000-000000000010',
+  nom: 'Test',
+  email: 'test@example.invalid',
+  role: 'ADMIN',
+  legacy_cache_owner: true,
+};
 
 async function startServer() {
   if (server) return;
@@ -107,6 +115,8 @@ test('static app includes local production CSS and the technician login', async 
   assert.equal(css.status, 200);
   const cssText = await css.text();
   assert.match(cssText, /\.hidden\s*\{/);
+  assert.match(cssText, /\.tracking-status-card\[data-status=["']?EN_COURS["']?\]/);
+  assert.match(cssText, /\.tracking-notification/);
   assert.match(cssText, /#signature-canvas\s*\{[^}]*touch-action:\s*none/);
   assert.match(cssText, /#signature-canvas\s*\{[^}]*height:\s*clamp\(180px,\s*30vh,\s*240px\)/);
   const script = await fetch(`${baseUrl}/app.js`);
@@ -163,16 +173,31 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(pageHtml, /rel="apple-touch-icon" href="\/icon-192\.png"/);
   const serviceWorker = await fetch(`${baseUrl}/service-worker.js`);
   const serviceWorkerText = await serviceWorker.text();
-  assert.match(serviceWorkerText, /atelier-express-v18/);
+  assert.match(serviceWorkerText, /atelier-express-v20/);
   assert.match(serviceWorkerText, /offline-store\.js/);
   assert.match(serviceWorkerText, /icon-512\.png/);
   assert.match(serviceWorkerText, /addEventListener\('push'/);
+  assert.match(serviceWorkerText, /vibrate:\s*\[300,\s*120,\s*300,\s*120,\s*650\]/);
+  assert.match(serviceWorkerText, /requireInteraction:\s*true/);
+  assert.match(serviceWorkerText, /renotify:\s*true/);
+  const pushSource = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'push-notifications.js'),
+    'utf8',
+  );
+  assert.match(pushSource, /urgency:\s*'high'/);
   const trackingPage = await fetch(`${baseUrl}/suivi`);
   assert.equal(trackingPage.status, 200);
-  assert.match(await trackingPage.text(), /Suivi de réparation/);
+  const trackingHtml = await trackingPage.text();
+  assert.match(trackingHtml, /Suivi de réparation/);
+  assert.match(trackingHtml, /id="tracking-progress"/);
+  assert.match(trackingHtml, /data-step="EN_COURS"/);
+  assert.match(trackingHtml, /id="notification-panel"/);
   const trackingScript = await fetch(`${baseUrl}/suivi.js`);
   assert.equal(trackingScript.status, 200);
-  assert.match(await trackingScript.text(), /PushManager/);
+  const trackingScriptText = await trackingScript.text();
+  assert.match(trackingScriptText, /title:\s*'En cours'/);
+  assert.match(trackingScriptText, /currentStatus === 'PRET' \|\| currentStatus === 'LIVRE'/);
+  assert.match(trackingScriptText, /PushManager/);
 });
 
 test('Render blueprint deploys commits automatically', () => {
@@ -191,6 +216,101 @@ test('business API requires an authenticated technician and disables caching', a
   const snapshot = await fetch(`${baseUrl}/api/offline/snapshot`);
   assert.equal(snapshot.status, 401);
   assert.equal(snapshot.headers.get('cache-control'), 'no-store');
+});
+
+test('authenticated business reads and mutations are constrained to the technician account', async () => {
+  await startServer();
+  const originalQuery = db.query;
+  const originalConnect = db.pool.connect;
+  const token = crypto.randomBytes(32).toString('hex');
+  const deviceId = '00000000-0000-4000-8000-000000000022';
+  const queries = [];
+  const transactionQueries = [];
+
+  db.query = async (sql, values = []) => {
+    if (sql.includes('sessions_techniciens')) {
+      return { rows: [{ ...AUTHENTICATED_TECHNICIAN }], rowCount: 1 };
+    }
+    queries.push({ sql, values });
+    if (sql.includes('SELECT COUNT(*) AS total')) return { rows: [{ total: '0' }], rowCount: 1 };
+    if (sql.includes('WITH semaine AS')) return { rows: [{}], rowCount: 1 };
+    if (sql.includes('WITH local_now AS')) return { rows: [], rowCount: 0 };
+    if (sql.includes('WITH current_device AS')) return { rows: [], rowCount: 0 };
+    if (sql.startsWith('UPDATE appareils_reparation')) return { rows: [], rowCount: 0 };
+    return { rows: [], rowCount: 0 };
+  };
+  db.pool.connect = async () => ({
+    query: async (sql, values = []) => {
+      transactionQueries.push({ sql, values });
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => {},
+  });
+
+  const request = (path, options = {}) => fetch(`${baseUrl}${path}`, {
+    ...options,
+    headers: {
+      Cookie: `${SESSION_COOKIE}=${token}`,
+      ...(options.headers || {}),
+    },
+  });
+
+  try {
+    assert.equal((await request('/api/clients?telephone=123')).status, 200);
+    assert.equal((await request('/api/appareils')).status, 200);
+    assert.equal((await request(`/api/appareils/${deviceId}`)).status, 404);
+    assert.equal((await request('/api/reports/revenue?period=week')).status, 200);
+    assert.equal((await request('/api/dashboard')).status, 200);
+    assert.equal((await request('/api/offline/snapshot')).status, 200);
+
+    const patch = await request(`/api/appareils/${deviceId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ statut: 'EN_COURS' }),
+    });
+    assert.equal(patch.status, 404);
+    assert.equal((await request(`/api/appareils/${deviceId}`, { method: 'DELETE' })).status, 404);
+
+    const payment = await request(`/api/appareils/${deviceId}/paiements`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': '00000000-0000-4000-8000-000000000023',
+      },
+      body: JSON.stringify({ montant: 10, devise: 'USD' }),
+    });
+    assert.equal(payment.status, 404);
+
+    const approval = await request(`/api/appareils/${deviceId}/approbation`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ signature_data: 'data:image/png;base64,AAAA' }),
+    });
+    assert.equal(approval.status, 404);
+
+    const tenantId = AUTHENTICATED_TECHNICIAN.account_id;
+    const scopedQuery = (text) => queries.find((entry) => entry.sql.includes(text));
+    assert.deepEqual(scopedQuery('FROM clients').values, ['%123%', tenantId]);
+    assert.match(scopedQuery('WITH local_now AS').sql, /a\.account_id = \$1/);
+    assert.deepEqual(scopedQuery('WITH local_now AS').values, [tenantId]);
+    assert.ok(queries.some((entry) => entry.sql.includes('FROM appareils_reparation a') &&
+      entry.sql.includes('a.account_id = $1') && entry.values[0] === tenantId));
+    assert.ok(queries.some((entry) => entry.sql.includes('WITH current_device AS') &&
+      entry.sql.includes('account_id = $8') && entry.values[7] === tenantId));
+    assert.ok(queries.some((entry) => entry.sql.startsWith('UPDATE appareils_reparation') &&
+      entry.sql.includes('account_id = $3') && entry.values[2] === tenantId));
+    assert.ok(transactionQueries.some((entry) => entry.sql.includes('FROM paiements WHERE request_key = $1 AND account_id = $2') &&
+      entry.values[1] === tenantId));
+    assert.ok(transactionQueries.some((entry) => entry.sql.includes('appareils_reparation') &&
+      entry.sql.includes('account_id = $2') && entry.values[1] === tenantId));
+    for (const entry of transactionQueries.filter((item) => item.sql.startsWith('SELECT'))) {
+      assert.match(entry.sql, /account_id/);
+      assert.ok(entry.values.includes(tenantId));
+    }
+  } finally {
+    db.query = originalQuery;
+    db.pool.connect = originalConnect;
+  }
 });
 
 test('public repair tracking exposes no client or payment details and accepts consented Push subscriptions', async () => {
@@ -282,7 +402,7 @@ test('technician QR route creates an app-origin tracking QR', async () => {
   db.query = async (sql) => {
     if (sql.includes('sessions_techniciens')) {
       return {
-        rows: [{ id: '00000000-0000-4000-8000-000000000001', nom: 'Test', email: 'test@example.invalid', role: 'ADMIN' }],
+        rows: [{ ...AUTHENTICATED_TECHNICIAN }],
         rowCount: 1,
       };
     }
@@ -326,7 +446,7 @@ test('ready transition queues a Push delivery only when entering PRET', async ()
   db.query = async (sql) => {
     if (sql.includes('sessions_techniciens')) {
       return {
-        rows: [{ id: '00000000-0000-4000-8000-000000000001', nom: 'Test', email: 'test@example.invalid', role: 'ADMIN' }],
+        rows: [{ ...AUTHENTICATED_TECHNICIAN }],
         rowCount: 1,
       };
     }
@@ -383,7 +503,7 @@ test('revenue reports validate periods and include only delivered approved repai
   db.query = async (sql) => {
     if (sql.includes('sessions_techniciens')) {
       return {
-        rows: [{ id: '00000000-0000-4000-8000-000000000001', nom: 'Test', email: 'test@example.invalid', role: 'ADMIN' }],
+        rows: [{ ...AUTHENTICATED_TECHNICIAN }],
         rowCount: 1,
       };
     }
@@ -435,7 +555,7 @@ test('stale offline changes are rejected when another device changed the repair'
   db.query = async (sql) => {
     if (sql.includes('sessions_techniciens')) {
       return {
-        rows: [{ id: '00000000-0000-4000-8000-000000000001', nom: 'Test', email: 'test@example.invalid', role: 'ADMIN' }],
+        rows: [{ ...AUTHENTICATED_TECHNICIAN }],
         rowCount: 1,
       };
     }
@@ -492,7 +612,7 @@ test('repair intake accepts a stable client-generated ID for offline synchroniza
   db.query = async (sql, values = []) => {
     if (sql.includes('sessions_techniciens')) {
       return {
-        rows: [{ id: '00000000-0000-4000-8000-000000000001', nom: 'Test', email: 'test@example.invalid', role: 'ADMIN' }],
+        rows: [{ ...AUTHENTICATED_TECHNICIAN }],
         rowCount: 1,
       };
     }
@@ -522,6 +642,7 @@ test('repair intake accepts a stable client-generated ID for offline synchroniza
     assert.equal(insertedValues[1], 'Test');
     assert.equal(insertedValues[2], '+243812345678');
     assert.equal(insertedValues[8], requestKey);
+    assert.equal(insertedValues[9], AUTHENTICATED_TECHNICIAN.account_id);
   } finally {
     db.query = originalQuery;
   }
@@ -535,7 +656,7 @@ test('new repair intake rejects a missing agreed price before database writes', 
     sessionLookups += 1;
     assert.match(sql, /sessions_techniciens/);
     return {
-      rows: [{ id: '00000000-0000-4000-8000-000000000001', nom: 'Test', email: 'test@example.invalid', role: 'ADMIN' }],
+      rows: [{ ...AUTHENTICATED_TECHNICIAN }],
       rowCount: 1,
     };
   };
@@ -627,6 +748,69 @@ test('technician registration requires the configured invitation code', async ()
   }
 });
 
+test('registration creates a private administrator workspace', async () => {
+  await startServer();
+  const originalConnect = db.pool.connect;
+  const originalInviteCode = process.env.TECHNICIAN_INVITE_CODE;
+  const originalNodeEnv = process.env.NODE_ENV;
+  let accountId;
+  let insertedValues;
+  process.env.NODE_ENV = 'development';
+  process.env.TECHNICIAN_INVITE_CODE = 'atelier-invite-test';
+  db.pool.connect = async () => ({
+    query: async (sql, values = []) => {
+      if (sql === 'SELECT EXISTS (SELECT 1 FROM techniciens) AS has_technicians') {
+        return { rows: [{ has_technicians: true }], rowCount: 1 };
+      }
+      if (sql.startsWith('INSERT INTO techniciens')) {
+        insertedValues = values;
+        accountId = values[0];
+        return {
+          rows: [{
+            id: accountId,
+            account_id: accountId,
+            nom: 'Nova',
+            email: 'nova@example.com',
+            role: 'ADMIN',
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.startsWith('INSERT INTO sessions_techniciens')) {
+        return { rows: [{ expires_at: '2026-12-01T00:00:00.000Z' }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 1 };
+    },
+    release: () => {},
+  });
+  try {
+    const response = await fetch(`${baseUrl}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        nom: 'Nova',
+        email: 'nova@example.com',
+        password: 'Aa1234',
+        confirmation: 'Aa1234',
+        code: 'atelier-invite-test',
+      }),
+    });
+    assert.equal(response.status, 201);
+    const result = await response.json();
+    assert.equal(result.technicien.role, 'ADMIN');
+    assert.equal(result.technicien.account_id, accountId);
+    assert.equal(result.technicien.legacy_cache_owner, false);
+    assert.equal(insertedValues[0], accountId);
+    assert.match(accountId, /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  } finally {
+    db.pool.connect = originalConnect;
+    if (originalInviteCode === undefined) delete process.env.TECHNICIAN_INVITE_CODE;
+    else process.env.TECHNICIAN_INVITE_CODE = originalInviteCode;
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
+  }
+});
+
 test('login stores the 30-day expiration when remember is selected', async () => {
   await startServer();
   const originalQuery = db.query;
@@ -634,7 +818,7 @@ test('login stores the 30-day expiration when remember is selected', async () =>
   let sessionExpirationSeconds;
   db.query = async (sql, values = []) => {
     if (sql.includes('SELECT attempts')) return { rows: [], rowCount: 0 };
-    if (sql.includes('SELECT id, nom, email, password_hash, role')) {
+    if (sql.includes('SELECT t.id, t.nom, t.email, t.password_hash')) {
       return {
         rows: [{
           id: '00000000-0000-4000-8000-000000000001',
@@ -642,6 +826,8 @@ test('login stores the 30-day expiration when remember is selected', async () =>
           email: 'nova@example.com',
           password_hash: passwordHash,
           role: 'ADMIN',
+          account_id: AUTHENTICATED_TECHNICIAN.account_id,
+          legacy_cache_owner: true,
         }],
         rowCount: 1,
       };

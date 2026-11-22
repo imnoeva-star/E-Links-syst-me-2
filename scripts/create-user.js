@@ -58,10 +58,17 @@ async function main() {
   const confirmation = await askHidden('Confirmer le mot de passe : ');
   if (password !== confirmation) throw new Error('Les mots de passe ne correspondent pas.');
   const passwordHash = await hashPassword(password);
-  await db.query(
-    'INSERT INTO techniciens (nom, email, password_hash) VALUES ($1, $2, $3)',
+  const result = await db.query(
+    `INSERT INTO techniciens (account_id, nom, email, password_hash)
+     SELECT root.account_id, $1, $2, $3
+     FROM techniciens AS root
+     WHERE root.role = 'ADMIN' AND root.account_id = root.id
+     ORDER BY root.created_at, root.id
+     LIMIT 1
+     RETURNING id`,
     [nom, email, passwordHash],
   );
+  if (!result.rowCount) throw new Error('Créez d’abord un compte administrateur avant un compte technicien.');
   console.log(`Compte créé pour ${email}.`);
 }
 

@@ -173,7 +173,9 @@ router.get('/techniciens', requireAdmin, async (req, res, next) => {
     const result = await db.query(
       `SELECT id, nom, email, role, actif, created_at
        FROM techniciens
+       WHERE account_id = $1
        ORDER BY CASE role WHEN 'ADMIN' THEN 0 ELSE 1 END, nom`,
+      [req.technicien.account_id],
     );
     res.json(result.rows);
   } catch (error) {
@@ -202,10 +204,10 @@ router.post('/techniciens', requireAdmin, async (req, res, next) => {
   try {
     const passwordHash = await hashPassword(password);
     const result = await db.query(
-      `INSERT INTO techniciens (nom, email, password_hash, role)
-       VALUES ($1, LOWER($2), $3, 'TECHNICIEN')
+      `INSERT INTO techniciens (account_id, nom, email, password_hash, role)
+       VALUES ($1, $2, LOWER($3), $4, 'TECHNICIEN')
        RETURNING id, nom, email, role, actif, created_at`,
-      [nom.trim(), email.trim(), passwordHash],
+      [req.technicien.account_id, nom.trim(), email.trim(), passwordHash],
     );
     res.status(201).json(result.rows[0]);
   } catch (error) {
@@ -225,16 +227,20 @@ router.patch('/techniciens/:id', requireAdmin, async (req, res, next) => {
     const result = await db.query(
       `UPDATE techniciens
        SET actif = $2
-       WHERE id = $1
+       WHERE id = $1 AND account_id = $3
          AND (
            $2 = TRUE OR role <> 'ADMIN' OR
-           (SELECT COUNT(*) FROM techniciens WHERE role = 'ADMIN' AND actif = TRUE) > 1
+           (SELECT COUNT(*) FROM techniciens
+            WHERE account_id = $3 AND role = 'ADMIN' AND actif = TRUE) > 1
          )
        RETURNING id, nom, email, role, actif, created_at`,
-      [req.params.id, actif],
+      [req.params.id, actif, req.technicien.account_id],
     );
     if (result.rowCount) return res.json(result.rows[0]);
-    const existing = await db.query('SELECT id FROM techniciens WHERE id = $1', [req.params.id]);
+    const existing = await db.query(
+      'SELECT id FROM techniciens WHERE id = $1 AND account_id = $2',
+      [req.params.id, req.technicien.account_id],
+    );
     if (!existing.rowCount) return res.status(404).json({ erreur: 'Technicien introuvable.' });
     return res.status(409).json({ erreur: 'Le dernier administrateur actif ne peut pas être désactivé.' });
   } catch (error) {
@@ -254,10 +260,11 @@ router.get('/clients', async (req, res, next) => {
     const result = await db.query(
       `SELECT id, nom, telephone
        FROM clients
-       WHERE regexp_replace(telephone, '[^0-9+]', '', 'g') ILIKE $1
+       WHERE account_id = $2
+         AND regexp_replace(telephone, '[^0-9+]', '', 'g') ILIKE $1
        ORDER BY created_at DESC
        LIMIT 8`,
-      [`%${telephone}%`],
+      [`%${telephone}%`, req.technicien.account_id],
     );
     res.json(result.rows);
   } catch (error) {
@@ -300,10 +307,12 @@ router.get('/reports/revenue', async (req, res, next) => {
           SUM(p.montant) FILTER (WHERE p.devise = 'USD') AS usd,
           SUM(p.montant) FILTER (WHERE p.devise = 'CDF') AS cdf
         FROM paiements p
-        JOIN appareils_reparation a ON a.id = p.appareil_id
-        JOIN actes_approbation acte ON acte.appareil_id = a.id
+        JOIN appareils_reparation a ON a.id = p.appareil_id AND a.account_id = p.account_id
+        JOIN actes_approbation acte ON acte.appareil_id = a.id AND acte.account_id = a.account_id
         CROSS JOIN period_bounds
         WHERE a.statut = 'LIVRE'
+          AND a.account_id = $1
+          AND p.account_id = $1
           AND a.archived_at IS NULL
           AND p.created_at >= (period_bounds.start_local AT TIME ZONE 'Africa/Kinshasa')
           AND p.created_at < (period_bounds.end_local AT TIME ZONE 'Africa/Kinshasa')
@@ -316,7 +325,7 @@ router.get('/reports/revenue', async (req, res, next) => {
       FROM buckets
       LEFT JOIN revenue USING (bucket)
       ORDER BY buckets.bucket
-    `);
+    `, [req.technicien.account_id]);
     res.json({ period: periodName, points: result.rows });
   } catch (error) {
     next(error);
@@ -337,10 +346,12 @@ router.get('/dashboard', async (req, res, next) => {
         COALESCE((
           SELECT SUM(p.montant) FILTER (WHERE p.devise = 'USD')
           FROM paiements p
-          JOIN appareils_reparation a ON a.id = p.appareil_id
-          JOIN actes_approbation acte ON acte.appareil_id = a.id
+          JOIN appareils_reparation a ON a.id = p.appareil_id AND a.account_id = p.account_id
+          JOIN actes_approbation acte ON acte.appareil_id = a.id AND acte.account_id = a.account_id
           CROSS JOIN semaine
           WHERE a.statut = 'LIVRE'
+            AND a.account_id = $1
+            AND p.account_id = $1
             AND a.archived_at IS NULL
             AND p.created_at >= semaine.debut
             AND p.created_at < semaine.fin
@@ -348,10 +359,12 @@ router.get('/dashboard', async (req, res, next) => {
         COALESCE((
           SELECT SUM(p.montant) FILTER (WHERE p.devise = 'CDF')
           FROM paiements p
-          JOIN appareils_reparation a ON a.id = p.appareil_id
-          JOIN actes_approbation acte ON acte.appareil_id = a.id
+          JOIN appareils_reparation a ON a.id = p.appareil_id AND a.account_id = p.account_id
+          JOIN actes_approbation acte ON acte.appareil_id = a.id AND acte.account_id = a.account_id
           CROSS JOIN semaine
           WHERE a.statut = 'LIVRE'
+            AND a.account_id = $1
+            AND p.account_id = $1
             AND a.archived_at IS NULL
             AND p.created_at >= semaine.debut
             AND p.created_at < semaine.fin
@@ -359,15 +372,16 @@ router.get('/dashboard', async (req, res, next) => {
         COUNT(*) FILTER (WHERE statut <> 'LIVRE') AS appareils_attente,
         COUNT(*) FILTER (WHERE urgent = TRUE AND statut <> 'LIVRE') AS urgents
       FROM appareils_reparation
-      WHERE archived_at IS NULL
-    `);
+      WHERE archived_at IS NULL AND account_id = $1
+    `, [req.technicien.account_id]);
     const urgents = await db.query(
       `SELECT a.id, a.marque, a.modele, a.panne, a.statut, c.nom, c.telephone
        FROM appareils_reparation a
-       JOIN clients c ON c.id = a.client_id
-       WHERE a.urgent = TRUE AND a.statut <> 'LIVRE' AND a.archived_at IS NULL
+       JOIN clients c ON c.id = a.client_id AND c.account_id = a.account_id
+       WHERE a.account_id = $1 AND a.urgent = TRUE AND a.statut <> 'LIVRE' AND a.archived_at IS NULL
        ORDER BY a.created_at ASC
        LIMIT 10`,
+      [req.technicien.account_id],
     );
     const journalier = await db.query(`
       WITH semaine AS (
@@ -389,10 +403,12 @@ router.get('/dashboard', async (req, res, next) => {
           COALESCE(SUM(p.montant) FILTER (WHERE p.devise = 'USD'), 0) AS usd,
           COALESCE(SUM(p.montant) FILTER (WHERE p.devise = 'CDF'), 0) AS cdf
         FROM paiements p
-        JOIN appareils_reparation a ON a.id = p.appareil_id
-        JOIN actes_approbation acte ON acte.appareil_id = a.id
+        JOIN appareils_reparation a ON a.id = p.appareil_id AND a.account_id = p.account_id
+        JOIN actes_approbation acte ON acte.appareil_id = a.id AND acte.account_id = a.account_id
         CROSS JOIN semaine
         WHERE a.statut = 'LIVRE'
+          AND a.account_id = $1
+          AND p.account_id = $1
           AND a.archived_at IS NULL
           AND p.created_at >= semaine.debut
           AND p.created_at < semaine.fin
@@ -405,7 +421,7 @@ router.get('/dashboard', async (req, res, next) => {
       FROM jours
       LEFT JOIN paiements_journaliers USING (jour)
       ORDER BY jours.jour
-    `);
+    `, [req.technicien.account_id]);
     res.json({
       ...result.rows[0],
       encaissements_journaliers: journalier.rows,
@@ -423,45 +439,46 @@ router.get('/offline/snapshot', async (req, res, next) => {
     client = await db.pool.connect();
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     transactionStarted = true;
-    const [clients, appareils, paiements] = await Promise.all([
-      client.query(
-        'SELECT id, nom, telephone FROM clients ORDER BY created_at DESC',
-      ),
-      client.query(
-        `SELECT a.*, a.updated_at::text AS updated_at,
-                c.nom AS client_nom, c.telephone,
-                (acte.id IS NOT NULL) AS acte_valide,
-                acte.clause, acte.valide_at, acte.signature_data,
-                totaux.total_usd AS paiements_usd,
-                totaux.total_cdf AS paiements_cdf,
-                CASE WHEN a.prix_devise = 'USD' AND a.prix_convenu IS NOT NULL
-                     THEN GREATEST(a.prix_convenu - totaux.total_usd, 0)
-                     WHEN a.prix_devise = 'CDF' AND a.prix_convenu IS NOT NULL
-                     THEN GREATEST(a.prix_convenu - totaux.total_cdf, 0)
-                     ELSE NULL
-                END AS solde
-         FROM appareils_reparation a
-         JOIN clients c ON c.id = a.client_id
-         LEFT JOIN actes_approbation acte ON acte.appareil_id = a.id
-         LEFT JOIN LATERAL (
-           SELECT
-             COALESCE(SUM(montant) FILTER (WHERE devise = 'USD'), 0) AS total_usd,
-             COALESCE(SUM(montant) FILTER (WHERE devise = 'CDF'), 0) AS total_cdf
-           FROM paiements
-           WHERE appareil_id = a.id
-         ) totaux ON TRUE
-         WHERE a.archived_at IS NULL
-         ORDER BY a.created_at DESC, a.id`,
-      ),
-      client.query(
-        `SELECT p.id, p.appareil_id, p.montant, p.devise, p.request_key,
-                p.created_at::text AS created_at
-         FROM paiements p
-         JOIN appareils_reparation a ON a.id = p.appareil_id
-         WHERE a.archived_at IS NULL
-         ORDER BY p.created_at`,
-      ),
-    ]);
+    const clients = await client.query(
+      'SELECT id, nom, telephone FROM clients WHERE account_id = $1 ORDER BY created_at DESC',
+      [req.technicien.account_id],
+    );
+    const appareils = await client.query(
+      `SELECT a.*, a.updated_at::text AS updated_at,
+              c.nom AS client_nom, c.telephone,
+              (acte.id IS NOT NULL) AS acte_valide,
+              acte.clause, acte.valide_at, acte.signature_data,
+              totaux.total_usd AS paiements_usd,
+              totaux.total_cdf AS paiements_cdf,
+              CASE WHEN a.prix_devise = 'USD' AND a.prix_convenu IS NOT NULL
+                   THEN GREATEST(a.prix_convenu - totaux.total_usd, 0)
+                   WHEN a.prix_devise = 'CDF' AND a.prix_convenu IS NOT NULL
+                   THEN GREATEST(a.prix_convenu - totaux.total_cdf, 0)
+                   ELSE NULL
+              END AS solde
+       FROM appareils_reparation a
+       JOIN clients c ON c.id = a.client_id AND c.account_id = a.account_id
+       LEFT JOIN actes_approbation acte ON acte.appareil_id = a.id AND acte.account_id = a.account_id
+       LEFT JOIN LATERAL (
+         SELECT
+           COALESCE(SUM(montant) FILTER (WHERE devise = 'USD'), 0) AS total_usd,
+           COALESCE(SUM(montant) FILTER (WHERE devise = 'CDF'), 0) AS total_cdf
+         FROM paiements
+         WHERE appareil_id = a.id AND account_id = a.account_id
+       ) totaux ON TRUE
+       WHERE a.account_id = $1 AND a.archived_at IS NULL
+       ORDER BY a.created_at DESC, a.id`,
+      [req.technicien.account_id],
+    );
+    const paiements = await client.query(
+      `SELECT p.id, p.appareil_id, p.montant, p.devise, p.request_key,
+              p.created_at::text AS created_at
+       FROM paiements p
+       JOIN appareils_reparation a ON a.id = p.appareil_id AND a.account_id = p.account_id
+       WHERE a.account_id = $1 AND p.account_id = $1 AND a.archived_at IS NULL
+       ORDER BY p.created_at`,
+      [req.technicien.account_id],
+    );
     await client.query('COMMIT');
     transactionStarted = false;
     res.json({
@@ -511,7 +528,7 @@ router.get('/appareils', async (req, res, next) => {
       ? "a.archived_at IS NULL AND a.statut = 'LIVRE'"
       : `a.archived_at IS NULL AND a.statut <> 'LIVRE'${statusFilters[status]}`;
   const searchFilter =
-    "($1 = '' OR position(lower($1) in lower(concat_ws(' ', c.nom, c.telephone, a.marque, a.modele, a.panne))) > 0 OR ($2 <> '' AND position($2 in regexp_replace(c.telephone, '[^0-9]', '', 'g')) > 0))";
+    "($2 = '' OR position(lower($2) in lower(concat_ws(' ', c.nom, c.telephone, a.marque, a.modele, a.panne))) > 0 OR ($3 <> '' AND position($3 in regexp_replace(c.telephone, '[^0-9]', '', 'g')) > 0))";
   try {
     const listSql =
       `SELECT a.*, a.updated_at::text AS updated_at, c.nom AS client_nom, c.telephone,
@@ -525,35 +542,45 @@ router.get('/appareils', async (req, res, next) => {
                    ELSE NULL
               END AS solde
        FROM appareils_reparation a
-       JOIN clients c ON c.id = a.client_id
-       LEFT JOIN actes_approbation acte ON acte.appareil_id = a.id
+       JOIN clients c ON c.id = a.client_id AND c.account_id = a.account_id
+       LEFT JOIN actes_approbation acte ON acte.appareil_id = a.id AND acte.account_id = a.account_id
        LEFT JOIN LATERAL (
          SELECT
            COALESCE(SUM(montant) FILTER (WHERE devise = 'USD'), 0) AS total_usd,
            COALESCE(SUM(montant) FILTER (WHERE devise = 'CDF'), 0) AS total_cdf
          FROM paiements
-         WHERE appareil_id = a.id
+         WHERE appareil_id = a.id AND account_id = a.account_id
        ) totaux ON TRUE
-       WHERE ${where} AND ${searchFilter}
+       WHERE a.account_id = $1 AND ${where} AND ${searchFilter}
        ORDER BY ${section === 'waiting' ? 'a.urgent DESC, ' : ''}a.created_at DESC, a.id
-       LIMIT 50 OFFSET $3`;
+       LIMIT 50 OFFSET $4`;
     const requestedPage = Number(rawPage);
     const [count, initialResult] = await Promise.all([
       db.query(
         `SELECT COUNT(*) AS total
          FROM appareils_reparation a
          JOIN clients c ON c.id = a.client_id
-         WHERE ${where} AND ${searchFilter}`,
-        [search, searchDigits],
+         WHERE a.account_id = $1 AND ${where} AND ${searchFilter}`,
+        [req.technicien.account_id, search, searchDigits],
       ),
-      db.query(listSql, [search, searchDigits, (requestedPage - 1) * 50]),
+      db.query(listSql, [
+        req.technicien.account_id,
+        search,
+        searchDigits,
+        (requestedPage - 1) * 50,
+      ]),
     ]);
     const total = Number(count.rows[0].total);
     const pages = Math.max(1, Math.ceil(total / 50));
     const page = Math.min(requestedPage, pages);
     let result = initialResult;
     if (page !== requestedPage) {
-      result = await db.query(listSql, [search, searchDigits, (page - 1) * 50]);
+      result = await db.query(listSql, [
+        req.technicien.account_id,
+        search,
+        searchDigits,
+        (page - 1) * 50,
+      ]);
     }
     res.json({ appareils: result.rows, total, page, pages });
   } catch (error) {
@@ -578,17 +605,17 @@ router.get('/appareils/:id', async (req, res, next) => {
                    ELSE NULL
               END AS solde
        FROM appareils_reparation a
-       JOIN clients c ON c.id = a.client_id
-       LEFT JOIN actes_approbation acte ON acte.appareil_id = a.id
+       JOIN clients c ON c.id = a.client_id AND c.account_id = a.account_id
+       LEFT JOIN actes_approbation acte ON acte.appareil_id = a.id AND acte.account_id = a.account_id
        LEFT JOIN LATERAL (
          SELECT
            COALESCE(SUM(montant) FILTER (WHERE devise = 'USD'), 0) AS total_usd,
            COALESCE(SUM(montant) FILTER (WHERE devise = 'CDF'), 0) AS total_cdf
          FROM paiements
-         WHERE appareil_id = a.id
+         WHERE appareil_id = a.id AND account_id = a.account_id
        ) totaux ON TRUE
-       WHERE a.id = $1 AND a.archived_at IS NULL`,
-      [req.params.id],
+       WHERE a.id = $1 AND a.account_id = $2 AND a.archived_at IS NULL`,
+      [req.params.id, req.technicien.account_id],
     );
     if (!result.rowCount) return res.status(404).json({ erreur: 'Appareil introuvable.' });
     res.json(result.rows[0]);
@@ -617,8 +644,8 @@ router.post('/appareils/:id/qr', async (req, res, next) => {
   }
   try {
     const appareil = await db.query(
-      'SELECT id FROM appareils_reparation WHERE id = $1 AND archived_at IS NULL',
-      [req.params.id],
+      'SELECT id FROM appareils_reparation WHERE id = $1 AND account_id = $2 AND archived_at IS NULL',
+      [req.params.id, req.technicien.account_id],
     );
     if (!appareil.rowCount) return res.status(404).json({ erreur: 'Appareil introuvable.' });
     const trackingUrl = new URL('/suivi', baseUrl);
@@ -678,9 +705,9 @@ router.post('/appareils', async (req, res, next) => {
   try {
     const prior = await db.query(
       `SELECT a.*, a.updated_at::text AS updated_at, c.telephone FROM appareils_reparation a
-       JOIN clients c ON c.id = a.client_id
-       WHERE a.request_key = $1`,
-      [requestKey],
+       JOIN clients c ON c.id = a.client_id AND c.account_id = a.account_id
+       WHERE a.request_key = $1 AND a.account_id = $2`,
+      [requestKey, req.technicien.account_id],
     );
     if (prior.rowCount) {
       const device = prior.rows[0];
@@ -699,19 +726,19 @@ router.post('/appareils', async (req, res, next) => {
     }
     const result = await db.query(
       `WITH client AS (
-         INSERT INTO clients (nom, telephone)
-         VALUES ($2, $3)
-         ON CONFLICT (telephone) DO UPDATE SET nom = CASE
+         INSERT INTO clients (account_id, nom, telephone)
+         VALUES ($10, $2, $3)
+         ON CONFLICT (account_id, telephone) DO UPDATE SET nom = CASE
            WHEN EXCLUDED.nom <> '' THEN EXCLUDED.nom
            ELSE clients.nom
          END
          RETURNING id
        )
        INSERT INTO appareils_reparation
-         (id, client_id, marque, modele, panne, prix_convenu, urgent, request_key)
-       SELECT COALESCE($1::uuid, gen_random_uuid()), client.id, $4, $5, $6, $7, $8, $9
+         (id, account_id, client_id, marque, modele, panne, prix_convenu, urgent, request_key)
+       SELECT COALESCE($1::uuid, gen_random_uuid()), $10, client.id, $4, $5, $6, $7, $8, $9
        FROM client
-       ON CONFLICT (request_key) DO NOTHING
+       ON CONFLICT (account_id, request_key) DO NOTHING
        RETURNING *, updated_at::text AS updated_at`,
       [
         id || null,
@@ -723,14 +750,15 @@ router.post('/appareils', async (req, res, next) => {
         prix_convenu,
         urgent,
         requestKey,
+        req.technicien.account_id,
       ],
     );
     if (result.rowCount) return res.status(201).json(result.rows[0]);
     const existing = await db.query(
       `SELECT a.*, a.updated_at::text AS updated_at, c.telephone FROM appareils_reparation a
-       JOIN clients c ON c.id = a.client_id
-       WHERE a.request_key = $1`,
-      [requestKey],
+       JOIN clients c ON c.id = a.client_id AND c.account_id = a.account_id
+       WHERE a.request_key = $1 AND a.account_id = $2`,
+      [requestKey, req.technicien.account_id],
     );
     if (existing.rowCount) {
       const device = existing.rows[0];
@@ -796,7 +824,7 @@ router.patch('/appareils/:id', async (req, res, next) => {
       `WITH current_device AS (
          SELECT id, statut
          FROM appareils_reparation
-         WHERE id = $1 AND archived_at IS NULL
+         WHERE id = $1 AND account_id = $8 AND archived_at IS NULL
          FOR UPDATE
        ),
        updated_device AS (
@@ -807,7 +835,8 @@ router.patch('/appareils/:id', async (req, res, next) => {
              prix_devise = CASE WHEN $3::boolean THEN $6::text ELSE a.prix_devise END,
              updated_at = NOW()
          FROM current_device AS previous
-         WHERE a.id = previous.id AND a.archived_at IS NULL AND a.statut <> 'LIVRE'
+         WHERE a.id = previous.id AND a.account_id = $8
+           AND a.archived_at IS NULL AND a.statut <> 'LIVRE'
            AND ($7::timestamptz IS NULL OR a.updated_at = $7::timestamptz)
            AND (
              $2::text IS NULL OR previous.statut = $2 OR
@@ -825,12 +854,13 @@ router.patch('/appareils/:id', async (req, res, next) => {
         urgent === undefined ? null : urgent,
         body.prix_devise === undefined ? null : body.prix_devise,
         expectedVersion || null,
+        req.technicien.account_id,
       ],
     );
     if (!result.rowCount) {
       const current = await db.query(
-        'SELECT *, updated_at::text AS updated_at FROM appareils_reparation WHERE id = $1 AND archived_at IS NULL',
-        [req.params.id],
+        'SELECT *, updated_at::text AS updated_at FROM appareils_reparation WHERE id = $1 AND account_id = $2 AND archived_at IS NULL',
+        [req.params.id, req.technicien.account_id],
       );
       if (!current.rowCount) return res.status(404).json({ erreur: 'Appareil introuvable.' });
       if (expectedVersion && current.rows[0].updated_at !== expectedVersion) {
@@ -880,8 +910,8 @@ router.post('/appareils/:id/paiements', async (req, res, next) => {
     await client.query('BEGIN');
     transactionStarted = true;
     let prior = await client.query(
-      'SELECT id, appareil_id, montant, devise, request_key, created_at FROM paiements WHERE request_key = $1',
-      [requestKey],
+      'SELECT id, appareil_id, montant, devise, request_key, created_at FROM paiements WHERE request_key = $1 AND account_id = $2',
+      [requestKey, req.technicien.account_id],
     );
     if (prior.rowCount) {
       const payment = prior.rows[0];
@@ -896,8 +926,8 @@ router.post('/appareils/:id/paiements', async (req, res, next) => {
     }
     const appareil = await client.query(
       `SELECT id, statut FROM appareils_reparation
-       WHERE id = $1 AND archived_at IS NULL FOR UPDATE`,
-      [req.params.id],
+       WHERE id = $1 AND account_id = $2 AND archived_at IS NULL FOR UPDATE`,
+      [req.params.id, req.technicien.account_id],
     );
     if (!appareil.rowCount) {
       await client.query('ROLLBACK');
@@ -905,8 +935,8 @@ router.post('/appareils/:id/paiements', async (req, res, next) => {
       return res.status(404).json({ erreur: 'Appareil introuvable.' });
     }
     prior = await client.query(
-      'SELECT id, appareil_id, montant, devise, request_key, created_at FROM paiements WHERE request_key = $1',
-      [requestKey],
+      'SELECT id, appareil_id, montant, devise, request_key, created_at FROM paiements WHERE request_key = $1 AND account_id = $2',
+      [requestKey, req.technicien.account_id],
     );
     if (prior.rowCount) {
       const payment = prior.rows[0];
@@ -925,11 +955,11 @@ router.post('/appareils/:id/paiements', async (req, res, next) => {
       return res.status(409).json({ erreur: 'Un appareil livré ne peut plus recevoir de paiement.' });
     }
     const result = await client.query(
-      `INSERT INTO paiements (appareil_id, montant, devise, request_key)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (request_key) DO NOTHING
+      `INSERT INTO paiements (appareil_id, account_id, montant, devise, request_key)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (account_id, request_key) DO NOTHING
        RETURNING id, appareil_id, montant, devise, request_key, created_at`,
-      [req.params.id, montant, devise, requestKey],
+      [req.params.id, req.technicien.account_id, montant, devise, requestKey],
     );
     if (result.rowCount) {
       await client.query('COMMIT');
@@ -937,8 +967,8 @@ router.post('/appareils/:id/paiements', async (req, res, next) => {
       return res.status(201).json(result.rows[0]);
     }
     prior = await client.query(
-      'SELECT id, appareil_id, montant, devise, request_key, created_at FROM paiements WHERE request_key = $1',
-      [requestKey],
+      'SELECT id, appareil_id, montant, devise, request_key, created_at FROM paiements WHERE request_key = $1 AND account_id = $2',
+      [requestKey, req.technicien.account_id],
     );
     if (prior.rowCount && paymentMatches(prior.rows[0], req.params.id, montant, devise)) {
       await client.query('COMMIT');
@@ -972,15 +1002,15 @@ router.delete('/appareils/:id', async (req, res, next) => {
     const result = await db.query(
       `UPDATE appareils_reparation
        SET archived_at = NOW(), updated_at = NOW()
-       WHERE id = $1 AND archived_at IS NULL
+       WHERE id = $1 AND account_id = $3 AND archived_at IS NULL
          AND ($2::timestamptz IS NULL OR updated_at = $2::timestamptz)
        RETURNING id`,
-      [req.params.id, expectedVersion || null],
+      [req.params.id, expectedVersion || null, req.technicien.account_id],
     );
     if (!result.rowCount) {
       const current = await db.query(
-        'SELECT archived_at FROM appareils_reparation WHERE id = $1',
-        [req.params.id],
+        'SELECT archived_at FROM appareils_reparation WHERE id = $1 AND account_id = $2',
+        [req.params.id, req.technicien.account_id],
       );
       if (!current.rowCount) return res.status(404).json({ erreur: 'Appareil introuvable.' });
       if (current.rows[0].archived_at) return res.status(204).end();
@@ -1015,9 +1045,9 @@ router.post('/appareils/:id/approbation', async (req, res, next) => {
     transactionStarted = true;
     const appareil = await client.query(
       `SELECT id, statut FROM appareils_reparation
-       WHERE id = $1 AND archived_at IS NULL
+       WHERE id = $1 AND account_id = $2 AND archived_at IS NULL
        FOR UPDATE`,
-      [req.params.id],
+      [req.params.id, req.technicien.account_id],
     );
     if (!appareil.rowCount) {
       await client.query('ROLLBACK');
@@ -1026,8 +1056,8 @@ router.post('/appareils/:id/approbation', async (req, res, next) => {
     }
     const acteExistant = await client.query(
       `SELECT id, appareil_id, clause, type_validation, valide_at, signature_data
-       FROM actes_approbation WHERE appareil_id = $1`,
-      [req.params.id],
+       FROM actes_approbation WHERE appareil_id = $1 AND account_id = $2`,
+      [req.params.id, req.technicien.account_id],
     );
     if (acteExistant.rowCount) {
       await client.query('ROLLBACK');
@@ -1044,11 +1074,11 @@ router.post('/appareils/:id/approbation', async (req, res, next) => {
     }
 
     const result = await client.query(
-      `INSERT INTO actes_approbation (appareil_id, clause, type_validation, signature_data)
-       VALUES ($1, $2, 'SIGNATURE', $3)
+      `INSERT INTO actes_approbation (appareil_id, account_id, clause, type_validation, signature_data)
+       VALUES ($1, $2, $3, 'SIGNATURE', $4)
        ON CONFLICT (appareil_id) DO NOTHING
        RETURNING id, appareil_id, clause, type_validation, valide_at`,
-      [req.params.id, CLAUSE_SORTIE, signatureData],
+      [req.params.id, req.technicien.account_id, CLAUSE_SORTIE, signatureData],
     );
     if (!result.rowCount) {
       await client.query('ROLLBACK');
@@ -1057,9 +1087,10 @@ router.post('/appareils/:id/approbation', async (req, res, next) => {
     }
     const updated = await client.query(
       `UPDATE appareils_reparation SET statut = 'LIVRE', updated_at = NOW()
-       WHERE id = $1 AND ($2::timestamptz IS NULL OR updated_at = $2::timestamptz)
+       WHERE id = $1 AND account_id = $3 AND
+         ($2::timestamptz IS NULL OR updated_at = $2::timestamptz)
        RETURNING id, statut, updated_at::text AS updated_at`,
-      [req.params.id, expectedVersion || null],
+      [req.params.id, expectedVersion || null, req.technicien.account_id],
     );
     if (!updated.rowCount) {
       await client.query('ROLLBACK');

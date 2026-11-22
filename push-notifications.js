@@ -31,6 +31,10 @@ async function deliver(subscription, appareilId) {
         body: 'Votre téléphone est prêt. Vous pouvez passer à l’atelier.',
         url: `/suivi?appareil=${encodeURIComponent(appareilId)}`,
       }),
+      {
+        TTL: 86400,
+        urgency: 'high',
+      },
     );
   } catch (error) {
     if (error.statusCode === 404 || error.statusCode === 410) {

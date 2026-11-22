@@ -1,23 +1,35 @@
 -- Schéma initial. À exécuter une fois sur la base PostgreSQL.
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
-CREATE TABLE clients (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    nom TEXT NOT NULL DEFAULT '',
-    telephone TEXT NOT NULL UNIQUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
 CREATE TABLE techniciens (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_id UUID NOT NULL,
     nom TEXT NOT NULL CHECK (char_length(nom) BETWEEN 1 AND 80),
     email TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'TECHNICIEN'
         CHECK (role IN ('ADMIN', 'TECHNICIEN')),
     actif BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT techniciens_account_id_fkey
+        FOREIGN KEY (account_id) REFERENCES techniciens(id)
 );
+
+CREATE INDEX techniciens_account_idx ON techniciens (account_id);
+
+CREATE TABLE clients (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    account_id UUID NOT NULL,
+    nom TEXT NOT NULL DEFAULT '',
+    telephone TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT clients_account_telephone_uidx UNIQUE (account_id, telephone),
+    CONSTRAINT clients_id_account_uidx UNIQUE (id, account_id),
+    CONSTRAINT clients_account_id_fkey FOREIGN KEY (account_id) REFERENCES techniciens(id)
+);
+
+CREATE INDEX clients_account_created_idx
+    ON clients (account_id, created_at DESC);
 
 CREATE TABLE sessions_techniciens (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -52,7 +64,8 @@ CREATE INDEX auth_login_attempt_window_idx
 
 CREATE TABLE appareils_reparation (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    client_id UUID NOT NULL REFERENCES clients(id),
+    account_id UUID NOT NULL,
+    client_id UUID NOT NULL,
     marque TEXT NOT NULL,
     modele TEXT NOT NULL DEFAULT '',
     panne TEXT NOT NULL,
@@ -63,11 +76,19 @@ CREATE TABLE appareils_reparation (
         CONSTRAINT appareils_prix_devise_check CHECK (prix_devise IN ('USD', 'CDF')),
     urgent BOOLEAN NOT NULL DEFAULT FALSE,
     archived_at TIMESTAMPTZ,
-    request_key UUID NOT NULL UNIQUE DEFAULT gen_random_uuid(),
+    request_key UUID NOT NULL DEFAULT gen_random_uuid(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT appareils_account_request_key_uidx UNIQUE (account_id, request_key),
+    CONSTRAINT appareils_id_account_uidx UNIQUE (id, account_id),
+    CONSTRAINT appareils_account_id_fkey FOREIGN KEY (account_id) REFERENCES techniciens(id),
+    CONSTRAINT appareils_client_account_fkey FOREIGN KEY (client_id, account_id)
+        REFERENCES clients(id, account_id)
 );
 
+CREATE INDEX appareils_account_status_created_idx
+    ON appareils_reparation (account_id, statut, created_at DESC)
+    WHERE archived_at IS NULL;
 CREATE INDEX appareils_statut_created_idx
     ON appareils_reparation (statut, created_at DESC)
     WHERE archived_at IS NULL;
@@ -77,22 +98,31 @@ CREATE INDEX appareils_urgent_idx
 
 CREATE TABLE actes_approbation (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    appareil_id UUID NOT NULL UNIQUE REFERENCES appareils_reparation(id),
+    appareil_id UUID NOT NULL UNIQUE,
+    account_id UUID NOT NULL,
     clause TEXT NOT NULL,
     type_validation TEXT NOT NULL CHECK (type_validation IN ('SIGNATURE')),
     signature_data TEXT NOT NULL,
-    valide_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    valide_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT actes_account_id_fkey FOREIGN KEY (appareil_id, account_id)
+        REFERENCES appareils_reparation(id, account_id)
 );
 
 CREATE TABLE paiements (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    appareil_id UUID NOT NULL REFERENCES appareils_reparation(id),
+    appareil_id UUID NOT NULL,
+    account_id UUID NOT NULL,
     montant NUMERIC(12, 2) NOT NULL CHECK (montant > 0),
     devise TEXT NOT NULL CHECK (devise IN ('USD', 'CDF')),
-    request_key UUID NOT NULL UNIQUE DEFAULT gen_random_uuid(),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    request_key UUID NOT NULL DEFAULT gen_random_uuid(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT paiements_account_request_key_uidx UNIQUE (account_id, request_key),
+    CONSTRAINT paiements_account_id_fkey FOREIGN KEY (appareil_id, account_id)
+        REFERENCES appareils_reparation(id, account_id)
 );
 
+CREATE INDEX paiements_account_created_idx
+    ON paiements (account_id, created_at DESC);
 CREATE INDEX paiements_appareil_created_idx
     ON paiements (appareil_id, created_at DESC);
 CREATE INDEX paiements_created_idx

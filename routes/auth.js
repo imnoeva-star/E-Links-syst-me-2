@@ -78,7 +78,7 @@ router.post('/register', async (req, res, next) => {
     await client.query('SELECT pg_advisory_xact_lock($1)', [874221905]);
     const existing = await client.query('SELECT EXISTS (SELECT 1 FROM techniciens) AS has_technicians');
     const hasTechnicians = existing.rows[0].has_technicians;
-    const role = hasTechnicians ? 'TECHNICIEN' : 'ADMIN';
+    const role = 'ADMIN';
     const requiredCode = hasTechnicians
       ? process.env.TECHNICIAN_INVITE_CODE
       : process.env.INITIAL_SETUP_CODE;
@@ -106,11 +106,12 @@ router.post('/register', async (req, res, next) => {
       });
     }
 
+    const accountId = crypto.randomUUID();
     const technician = await client.query(
-      `INSERT INTO techniciens (nom, email, password_hash, role)
-       VALUES ($1, LOWER($2), $3, $4)
-       RETURNING id, nom, email, role`,
-      [nom.trim(), email.trim(), await hashPassword(password), role],
+      `INSERT INTO techniciens (id, account_id, nom, email, password_hash, role)
+       VALUES ($1, $1, $2, LOWER($3), $4, $5)
+       RETURNING id, account_id, nom, email, role`,
+      [accountId, nom.trim(), email.trim(), await hashPassword(password), role],
     );
     const token = crypto.randomBytes(32).toString('hex');
     const lifetimeSeconds = sessionLifetimeSeconds(remember === true);
@@ -124,7 +125,10 @@ router.post('/register', async (req, res, next) => {
     transactionStarted = false;
     setSessionCookie(res, token, lifetimeSeconds);
     res.status(201).json({
-      technicien: technician.rows[0],
+      technicien: {
+        ...technician.rows[0],
+        legacy_cache_owner: !hasTechnicians,
+      },
       session_expires_at: session.rows && session.rows[0] && session.rows[0].expires_at,
     });
   } catch (error) {
@@ -173,8 +177,15 @@ router.post('/login', async (req, res, next) => {
     }
 
     const result = await db.query(
-      `SELECT id, nom, email, password_hash, role
-       FROM techniciens
+      `SELECT t.id, t.nom, t.email, t.password_hash, t.role, t.account_id,
+              (t.account_id = (
+                SELECT root.account_id
+                FROM techniciens AS root
+                WHERE root.role = 'ADMIN' AND root.account_id = root.id
+                ORDER BY root.created_at, root.id
+                LIMIT 1
+              )) AS legacy_cache_owner
+       FROM techniciens AS t
        WHERE email = LOWER($1) AND actif = TRUE`,
       [emailAddress],
     );
@@ -219,6 +230,8 @@ router.post('/login', async (req, res, next) => {
         nom: technician.nom,
         email: technician.email,
         role: technician.role,
+        account_id: technician.account_id,
+        legacy_cache_owner: technician.legacy_cache_owner,
       },
       session_expires_at: session.rows && session.rows[0] && session.rows[0].expires_at,
     });
@@ -368,7 +381,15 @@ router.get('/session', async (req, res, next) => {
   if (!token) return res.status(401).json({ erreur: 'Connexion requise.' });
   try {
     const result = await db.query(
-      `SELECT t.id, t.nom, t.email, t.role, s.expires_at
+      `SELECT t.id, t.nom, t.email, t.role, t.account_id,
+              (t.account_id = (
+                SELECT root.account_id
+                FROM techniciens AS root
+                WHERE root.role = 'ADMIN' AND root.account_id = root.id
+                ORDER BY root.created_at, root.id
+                LIMIT 1
+              )) AS legacy_cache_owner,
+              s.expires_at
        FROM sessions_techniciens s
        JOIN techniciens t ON t.id = s.technicien_id
        WHERE s.token_hash = $1 AND s.expires_at > NOW() AND t.actif = TRUE`,

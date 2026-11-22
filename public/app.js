@@ -988,6 +988,14 @@ function showAuthForm(formId) {
 }
 
 async function showApp(technician, { offline = false, expiresAt } = {}) {
+  if (
+    !technician ||
+    !technician.account_id ||
+    typeof technician.legacy_cache_owner !== 'boolean'
+  ) {
+    throw new Error('Reconnectez-vous une fois en ligne pour activer le stockage privé de ce compte.');
+  }
+  OfflineStore.setAccount(technician.account_id, technician.legacy_cache_owner);
   state.technician = technician;
   if (!offline) {
     try {
@@ -1177,10 +1185,10 @@ async function loadRegistrationSetup() {
     $('#setup-code').required = setup.codeRequired;
     $('#registration-title').textContent = setup.isFirstAccount
       ? 'Créer le premier compte'
-      : 'Créer un compte technicien';
+      : 'Créer un atelier indépendant';
     $('#registration-description').textContent = setup.isFirstAccount
       ? 'Ce compte administrateur pourra ensuite gérer les accès de l’équipe.'
-      : 'Saisissez le code d’invitation fourni par l’administrateur de l’atelier.';
+      : 'Chaque inscription crée un espace privé, séparé des autres ateliers. Pour ajouter un employé, utilisez « Équipe et comptes ».';
     $('#setup-code-label').textContent = setup.isFirstAccount
       ? 'Code de première configuration'
       : 'Code d’invitation';
@@ -2227,8 +2235,17 @@ if (resetToken) {
     .catch(async (error) => {
       if (error.offline) {
         const technician = await OfflineStore.getSession().catch(() => null);
-        if (technician) {
+        if (
+          technician &&
+          technician.account_id &&
+          typeof technician.legacy_cache_owner === 'boolean'
+        ) {
           await showApp(technician, { offline: true });
+          return;
+        }
+        if (technician) {
+          showLogin('Connectez-vous une fois en ligne pour séparer les données hors connexion de votre compte.');
+          await $('#e-links-intro').dismiss();
           return;
         }
       }

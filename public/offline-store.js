@@ -1,9 +1,46 @@
 (() => {
   const DATABASE_NAME = 'atelier-express-offline';
+  const ACCOUNT_STORAGE_KEY = 'atelier-express-offline-account';
+  const LEGACY_OWNER_STORAGE_KEY = 'atelier-express-offline-legacy-owner';
   const DATABASE_VERSION = 1;
   const STORES = ['meta', 'clients', 'appareils', 'paiements', 'operations'];
+  const accountIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  let databaseName = DATABASE_NAME;
   let databasePromise;
+  let activeDatabase;
   let operationSequence = 0;
+
+  try {
+    const storedAccountId = window.localStorage.getItem(ACCOUNT_STORAGE_KEY);
+    if (accountIdPattern.test(storedAccountId || '')) {
+      databaseName = window.localStorage.getItem(LEGACY_OWNER_STORAGE_KEY) === storedAccountId
+        ? DATABASE_NAME
+        : `${DATABASE_NAME}-${storedAccountId}`;
+    }
+  } catch (error) {
+    console.error('Échec de lecture du compte hors ligne actif.', error);
+  }
+
+  function setAccount(accountId, legacyCacheOwner) {
+    if (!accountIdPattern.test(accountId || '') || typeof legacyCacheOwner !== 'boolean') {
+      throw new Error('Le compte connecté ne peut pas être utilisé pour le stockage hors ligne.');
+    }
+    const nextDatabaseName = legacyCacheOwner
+      ? DATABASE_NAME
+      : `${DATABASE_NAME}-${accountId}`;
+    if (nextDatabaseName !== databaseName) {
+      if (activeDatabase) activeDatabase.close();
+      activeDatabase = null;
+      databasePromise = null;
+    }
+    databaseName = nextDatabaseName;
+    window.localStorage.setItem(ACCOUNT_STORAGE_KEY, accountId);
+    if (legacyCacheOwner) {
+      window.localStorage.setItem(LEGACY_OWNER_STORAGE_KEY, accountId);
+    } else {
+      window.localStorage.removeItem(LEGACY_OWNER_STORAGE_KEY);
+    }
+  }
 
   function newId() {
     if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -20,7 +57,7 @@
     }
     if (!databasePromise) {
       databasePromise = new Promise((resolve, reject) => {
-        const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
+        const request = indexedDB.open(databaseName, DATABASE_VERSION);
         request.onupgradeneeded = () => {
           const database = request.result;
           STORES.forEach((name) => {
@@ -31,6 +68,7 @@
         };
         request.onsuccess = () => {
           request.result.onversionchange = () => request.result.close();
+          activeDatabase = request.result;
           resolve(request.result);
         };
         request.onerror = () => reject(request.error);
@@ -192,6 +230,7 @@
     commitMutation,
     enqueue,
     get: read,
+    setAccount,
     getQueue,
     getSession,
     open: openDatabase,

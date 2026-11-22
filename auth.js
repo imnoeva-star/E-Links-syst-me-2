@@ -71,7 +71,14 @@ async function requireTechnician(req, res, next) {
   if (!token) return res.status(401).json({ erreur: 'Connexion requise.' });
   try {
     const result = await db.query(
-      `SELECT t.id, t.nom, t.email, t.role
+      `SELECT t.id, t.nom, t.email, t.role, t.account_id,
+              (t.account_id = (
+                SELECT root.account_id
+                FROM techniciens AS root
+                WHERE root.role = 'ADMIN' AND root.account_id = root.id
+                ORDER BY root.created_at, root.id
+                LIMIT 1
+              )) AS legacy_cache_owner
        FROM sessions_techniciens s
        JOIN techniciens t ON t.id = s.technicien_id
        WHERE s.token_hash = $1 AND s.expires_at > NOW() AND t.actif = TRUE`,

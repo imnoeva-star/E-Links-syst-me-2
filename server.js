@@ -56,6 +56,31 @@ app.get('/readyz', async (req, res, next) => {
           SELECT 1 FROM pg_attribute
           WHERE attrelid = to_regclass('public.paiements')
             AND attname = 'request_key' AND NOT attisdropped
+        ) AND
+        EXISTS (
+          SELECT 1 FROM pg_attribute
+          WHERE attrelid = to_regclass('public.techniciens')
+            AND attname = 'account_id' AND NOT attisdropped
+        ) AND
+        EXISTS (
+          SELECT 1 FROM pg_attribute
+          WHERE attrelid = to_regclass('public.clients')
+            AND attname = 'account_id' AND NOT attisdropped
+        ) AND
+        EXISTS (
+          SELECT 1 FROM pg_attribute
+          WHERE attrelid = to_regclass('public.appareils_reparation')
+            AND attname = 'account_id' AND NOT attisdropped
+        ) AND
+        EXISTS (
+          SELECT 1 FROM pg_attribute
+          WHERE attrelid = to_regclass('public.paiements')
+            AND attname = 'account_id' AND NOT attisdropped
+        ) AND
+        EXISTS (
+          SELECT 1 FROM pg_attribute
+          WHERE attrelid = to_regclass('public.actes_approbation')
+            AND attname = 'account_id' AND NOT attisdropped
         ) AS ready
     `);
     if (!result.rows[0].ready) {

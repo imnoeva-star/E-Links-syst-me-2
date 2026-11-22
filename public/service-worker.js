@@ -1,4 +1,4 @@
-const CACHE_NAME = 'atelier-express-v18';
+const CACHE_NAME = 'atelier-express-v20';
 const APP_FILES = [
   '/',
   '/suivi',
@@ -45,7 +45,14 @@ self.addEventListener('push', (event) => {
       body: payload.body || 'Le statut de votre appareil a été mis à jour.',
       icon: '/icon-192.png',
       badge: '/icon-192.png',
+      vibrate: [300, 120, 300, 120, 650],
+      requireInteraction: true,
+      renotify: true,
+      silent: false,
+      tag: 'atelier-express-appareil-pret',
+      timestamp: Date.now(),
       data: { url: payload.url || '/suivi' },
+      actions: [{ action: 'open-tracking', title: 'Voir le suivi' }],
     },
   ));
 });
