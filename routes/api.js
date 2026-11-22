@@ -1,5 +1,7 @@
 const express = require('express');
+const QRCode = require('qrcode');
 const db = require('../db');
+const pushNotifications = require('../push-notifications');
 const auth = require('./auth');
 const { hashPassword, requireTechnician } = require('../auth');
 
@@ -25,6 +27,27 @@ function validRequestKey(value) {
 
 function validVersion(value) {
   return value === undefined || (typeof value === 'string' && !Number.isNaN(Date.parse(value)));
+}
+
+function validPushEndpoint(value) {
+  if (typeof value !== 'string' || value.length > 2048) return false;
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    return url.protocol === 'https:' &&
+      !url.username &&
+      !url.password &&
+      !url.hash &&
+      (
+        hostname === 'fcm.googleapis.com' ||
+        hostname === 'push.services.mozilla.com' ||
+        hostname.endsWith('.push.services.mozilla.com') ||
+        hostname.endsWith('.push.apple.com') ||
+        hostname.endsWith('.notify.windows.com')
+      );
+  } catch {
+    return false;
+  }
 }
 
 function patchMatchesDevice(device, body) {
@@ -61,12 +84,89 @@ router.use((req, res, next) => {
   next();
 });
 router.use('/auth', auth);
-router.use(requireTechnician);
-
 router.param('id', (req, res, next, id) => {
   if (!UUID_PATTERN.test(id)) return res.status(400).json({ erreur: 'Identifiant d’appareil invalide.' });
   next();
 });
+
+router.get('/public/appareils/:id', async (req, res, next) => {
+  try {
+    const result = await db.query(
+      `SELECT marque, modele, statut, updated_at::text AS updated_at
+       FROM appareils_reparation
+       WHERE id = $1 AND archived_at IS NULL`,
+      [req.params.id],
+    );
+    if (!result.rowCount) return res.status(404).json({ erreur: 'Dossier introuvable.' });
+    res.json({
+      appareil: result.rows[0],
+      push_public_key: pushNotifications.getPublicKey(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/public/appareils/:id/notifications', async (req, res, next) => {
+  const subscription = req.body && req.body.subscription;
+  const endpoint = subscription && subscription.endpoint;
+  const keys = subscription && subscription.keys;
+  if (!pushNotifications.getPublicKey()) {
+    return res.status(503).json({ erreur: 'Les notifications Push ne sont pas configurées.' });
+  }
+  if (
+    !validPushEndpoint(endpoint) ||
+    !keys ||
+    typeof keys.p256dh !== 'string' ||
+    !/^[A-Za-z0-9_-]{20,200}$/.test(keys.p256dh) ||
+    typeof keys.auth !== 'string' ||
+    !/^[A-Za-z0-9_-]{16,100}$/.test(keys.auth)
+  ) {
+    return res.status(400).json({ erreur: 'Abonnement Push invalide.' });
+  }
+  try {
+    const appareil = await db.query(
+      `SELECT statut FROM appareils_reparation
+       WHERE id = $1 AND archived_at IS NULL`,
+      [req.params.id],
+    );
+    if (!appareil.rowCount) return res.status(404).json({ erreur: 'Dossier introuvable.' });
+    if (appareil.rows[0].statut === 'LIVRE') {
+      return res.status(409).json({ erreur: 'Cet appareil a déjà été restitué.' });
+    }
+    await db.query(
+      `INSERT INTO push_subscriptions (appareil_id, endpoint, p256dh, auth)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (appareil_id, endpoint) DO UPDATE
+       SET p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth`,
+      [req.params.id, endpoint, keys.p256dh, keys.auth],
+    );
+    if (appareil.rows[0].statut === 'PRET') {
+      await pushNotifications.notifySubscription(subscription, req.params.id);
+    }
+    res.status(201).json({ active: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete('/public/appareils/:id/notifications', async (req, res, next) => {
+  const endpoint = req.body && req.body.endpoint;
+  if (typeof endpoint !== 'string' || endpoint.length > 2048) {
+    return res.status(400).json({ erreur: 'Abonnement Push invalide.' });
+  }
+  try {
+    await db.query(
+      'DELETE FROM push_subscriptions WHERE appareil_id = $1 AND endpoint = $2',
+      [req.params.id, endpoint],
+    );
+    res.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.use(requireTechnician);
 
 router.get('/techniciens', requireAdmin, async (req, res, next) => {
   try {
@@ -497,6 +597,43 @@ router.get('/appareils/:id', async (req, res, next) => {
   }
 });
 
+router.post('/appareils/:id/qr', async (req, res, next) => {
+  const configuredBaseUrl = process.env.APP_BASE_URL;
+  let baseUrl;
+  try {
+    if (!configuredBaseUrl) throw new Error('APP_BASE_URL absent.');
+    baseUrl = new URL(configuredBaseUrl);
+    if (
+      !['http:', 'https:'].includes(baseUrl.protocol) ||
+      baseUrl.username ||
+      baseUrl.password ||
+      (process.env.NODE_ENV === 'production' && baseUrl.protocol !== 'https:')
+    ) {
+      throw new Error('APP_BASE_URL invalide.');
+    }
+  } catch (error) {
+    console.error(`Configuration APP_BASE_URL invalide (${error.message}).`);
+    return res.status(503).json({ erreur: 'L’adresse publique de l’application n’est pas configurée.' });
+  }
+  try {
+    const appareil = await db.query(
+      'SELECT id FROM appareils_reparation WHERE id = $1 AND archived_at IS NULL',
+      [req.params.id],
+    );
+    if (!appareil.rowCount) return res.status(404).json({ erreur: 'Appareil introuvable.' });
+    const trackingUrl = new URL('/suivi', baseUrl);
+    trackingUrl.searchParams.set('appareil', req.params.id);
+    const qrCode = await QRCode.toDataURL(trackingUrl.toString(), {
+      errorCorrectionLevel: 'M',
+      margin: 1,
+      width: 280,
+    });
+    res.json({ url: trackingUrl.toString(), qr_code: qrCode });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post('/appareils', async (req, res, next) => {
   const body = req.body || {};
   const { id, nom = '', telephone, marque, modele = '', panne, prix_convenu = null, urgent = false } = body;
@@ -656,20 +793,30 @@ router.patch('/appareils/:id', async (req, res, next) => {
   }
   try {
     const result = await db.query(
-      `UPDATE appareils_reparation
-       SET statut = COALESCE($2, statut),
-           prix_convenu = CASE WHEN $3::boolean THEN $4::numeric ELSE prix_convenu END,
-           urgent = COALESCE($5, urgent),
-           prix_devise = CASE WHEN $3::boolean THEN $6::text ELSE prix_devise END,
-           updated_at = NOW()
-       WHERE id = $1 AND archived_at IS NULL AND statut <> 'LIVRE'
-         AND ($7::timestamptz IS NULL OR updated_at = $7::timestamptz)
-         AND (
-           $2::text IS NULL OR statut = $2 OR
-           ($2 = 'EN_COURS' AND statut = 'DEPOT') OR
-           ($2 = 'PRET' AND statut = 'EN_COURS')
-         )
-       RETURNING *, updated_at::text AS updated_at`,
+      `WITH current_device AS (
+         SELECT id, statut
+         FROM appareils_reparation
+         WHERE id = $1 AND archived_at IS NULL
+         FOR UPDATE
+       ),
+       updated_device AS (
+         UPDATE appareils_reparation AS a
+         SET statut = COALESCE($2, a.statut),
+             prix_convenu = CASE WHEN $3::boolean THEN $4::numeric ELSE a.prix_convenu END,
+             urgent = COALESCE($5, a.urgent),
+             prix_devise = CASE WHEN $3::boolean THEN $6::text ELSE a.prix_devise END,
+             updated_at = NOW()
+         FROM current_device AS previous
+         WHERE a.id = previous.id AND a.archived_at IS NULL AND a.statut <> 'LIVRE'
+           AND ($7::timestamptz IS NULL OR a.updated_at = $7::timestamptz)
+           AND (
+             $2::text IS NULL OR previous.statut = $2 OR
+             ($2 = 'EN_COURS' AND previous.statut = 'DEPOT') OR
+             ($2 = 'PRET' AND previous.statut = 'EN_COURS')
+           )
+         RETURNING a.*, a.updated_at::text AS updated_at, previous.statut AS previous_statut
+       )
+       SELECT * FROM updated_device`,
       [
         req.params.id,
         statut || null,
@@ -697,7 +844,13 @@ router.patch('/appareils/:id', async (req, res, next) => {
       }
       return res.status(409).json({ erreur: 'Respectez l’ordre des étapes : dépôt, en cours, puis prêt.' });
     }
-    res.json(result.rows[0]);
+    const { previous_statut: previousStatus, ...device } = result.rows[0];
+    if (previousStatus === 'EN_COURS' && device.statut === 'PRET') {
+      pushNotifications.notifyReady(device.id).catch((error) => {
+        console.error(`Échec d’envoi de l’alerte « appareil prêt » (${error.code || error.message}).`);
+      });
+    }
+    res.json(device);
   } catch (error) {
     next(error);
   }

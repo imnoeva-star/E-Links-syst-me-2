@@ -472,6 +472,19 @@
 
         <div id="device-summary" class="rounded-2xl bg-teal-50 p-4 text-sm font-semibold text-teal-900"></div>
 
+        <section class="rounded-2xl bg-white p-4 shadow-sm sm:p-5">
+          <h3 class="font-black">Suivi client par QR code</h3>
+          <p class="mt-1 text-sm text-slate-500">Le client pourra voir le statut et activer une alerte quand l’appareil sera prêt.</p>
+          <button id="device-qr-button" type="button" class="mt-3 rounded-xl bg-teal-700 px-4 py-3 text-sm font-bold text-white">
+            Afficher le QR client
+          </button>
+          <p id="device-qr-message" role="status" class="mt-2 text-sm text-slate-600"></p>
+          <div id="device-qr-result" class="mt-3 hidden rounded-xl border border-slate-200 p-3 text-center">
+            <img id="device-qr-image" alt="QR code de suivi client" class="mx-auto h-56 w-56">
+            <a id="device-qr-link" class="mt-2 block break-all text-xs text-teal-800 underline"></a>
+          </div>
+        </section>
+
         <form id="payment-form" class="space-y-3 rounded-2xl bg-white p-4 shadow-sm sm:p-5">
           <h3 class="font-black">Enregistrer un paiement</h3>
           <div class="flex gap-2">

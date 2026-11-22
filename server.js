@@ -27,6 +27,7 @@ app.use((req, res, next) => {
 });
 
 app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
+app.get('/suivi', (req, res) => res.sendFile(path.join(__dirname, 'public', 'suivi.html')));
 
 app.get('/readyz', async (req, res, next) => {
   try {
@@ -40,6 +41,7 @@ app.get('/readyz', async (req, res, next) => {
         to_regclass('public.sessions_techniciens') IS NOT NULL AND
          to_regclass('public.password_reset_tokens') IS NOT NULL AND
         to_regclass('public.auth_login_attempts') IS NOT NULL AND
+        to_regclass('public.push_subscriptions') IS NOT NULL AND
         EXISTS (
           SELECT 1 FROM pg_attribute
           WHERE attrelid = to_regclass('public.techniciens')

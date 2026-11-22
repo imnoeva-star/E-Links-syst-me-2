@@ -1755,6 +1755,9 @@ async function openDevice(id, trigger = null) {
       : formatMoney(device.solde, device.prix_devise);
     $('#device-summary').textContent =
       `${due} · Reçu : ${formatMoney(device.paiements_usd, 'USD')} + ${formatMoney(device.paiements_cdf, 'CDF')}`;
+    $('#device-qr-result').classList.add('hidden');
+    $('#device-qr-message').textContent = '';
+    $('#device-qr-button').disabled = false;
     const approvalSection = $('#device-approval');
     const signature = $('#device-signature');
     const hasSignature = typeof device.signature_data === 'string' &&
@@ -1786,6 +1789,36 @@ async function openDevice(id, trigger = null) {
     alert(error.message);
   }
 }
+
+async function loadDeviceQr(id) {
+  const button = $('#device-qr-button');
+  const message = $('#device-qr-message');
+  button.disabled = true;
+  button.textContent = 'Création du QR…';
+  message.textContent = '';
+  message.className = 'mt-2 text-sm text-slate-600';
+  try {
+    const qr = await request(`/api/appareils/${id}/qr`, { method: 'POST' });
+    if (activeDeviceId !== id) return;
+    $('#device-qr-image').src = qr.qr_code;
+    $('#device-qr-link').href = qr.url;
+    $('#device-qr-link').textContent = qr.url;
+    $('#device-qr-result').classList.remove('hidden');
+    message.textContent = 'Le client peut scanner ce QR pour suivre la réparation et activer les alertes.';
+  } catch (error) {
+    message.textContent = state.isOffline || !navigator.onLine
+      ? 'Dépôt conservé hors connexion. Le QR sera disponible après synchronisation.'
+      : error.message;
+    message.className = 'mt-2 text-sm text-amber-700';
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Afficher le QR client';
+  }
+}
+
+$('#device-qr-button').addEventListener('click', () => {
+  if (activeDeviceId) loadDeviceQr(activeDeviceId);
+});
 
 function closeDevice() {
   $('#device-dialog').classList.add('hidden');
@@ -1905,7 +1938,7 @@ intakeForm.addEventListener('submit', async (event) => {
   message.textContent = 'Enregistrement en cours…';
   message.className = 'text-sm text-slate-500';
   try {
-    await request('/api/appareils', {
+    const device = await request('/api/appareils', {
       method: 'POST',
       body: serializedBody,
       headers: { 'Idempotency-Key': state.pendingIntake.key },
@@ -1919,6 +1952,8 @@ intakeForm.addEventListener('submit', async (event) => {
     message.textContent = 'Dépôt enregistré.';
     message.className = 'text-sm text-teal-700';
     await refresh();
+    await openDevice(device.id);
+    await loadDeviceQr(device.id);
   } catch (error) {
     message.textContent = error.message;
     message.className = 'text-sm text-red-700';

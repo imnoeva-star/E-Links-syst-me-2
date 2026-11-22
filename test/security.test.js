@@ -163,9 +163,16 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(pageHtml, /rel="apple-touch-icon" href="\/icon-192\.png"/);
   const serviceWorker = await fetch(`${baseUrl}/service-worker.js`);
   const serviceWorkerText = await serviceWorker.text();
-  assert.match(serviceWorkerText, /atelier-express-v17/);
+  assert.match(serviceWorkerText, /atelier-express-v18/);
   assert.match(serviceWorkerText, /offline-store\.js/);
   assert.match(serviceWorkerText, /icon-512\.png/);
+  assert.match(serviceWorkerText, /addEventListener\('push'/);
+  const trackingPage = await fetch(`${baseUrl}/suivi`);
+  assert.equal(trackingPage.status, 200);
+  assert.match(await trackingPage.text(), /Suivi de réparation/);
+  const trackingScript = await fetch(`${baseUrl}/suivi.js`);
+  assert.equal(trackingScript.status, 200);
+  assert.match(await trackingScript.text(), /PushManager/);
 });
 
 test('Render blueprint deploys commits automatically', () => {
@@ -184,6 +191,188 @@ test('business API requires an authenticated technician and disables caching', a
   const snapshot = await fetch(`${baseUrl}/api/offline/snapshot`);
   assert.equal(snapshot.status, 401);
   assert.equal(snapshot.headers.get('cache-control'), 'no-store');
+});
+
+test('public repair tracking exposes no client or payment details and accepts consented Push subscriptions', async () => {
+  await startServer();
+  const originalQuery = db.query;
+  const previousVapid = {
+    publicKey: process.env.VAPID_PUBLIC_KEY,
+    privateKey: process.env.VAPID_PRIVATE_KEY,
+    subject: process.env.VAPID_SUBJECT,
+  };
+  const vapid = require('web-push').generateVAPIDKeys();
+  const token = '00000000-0000-4000-8000-000000000022';
+  const queries = [];
+  process.env.VAPID_PUBLIC_KEY = vapid.publicKey;
+  process.env.VAPID_PRIVATE_KEY = vapid.privateKey;
+  process.env.VAPID_SUBJECT = 'mailto:test@example.invalid';
+  db.query = async (sql) => {
+    queries.push(sql);
+    if (sql.includes('SELECT marque, modele, statut')) {
+      return {
+        rows: [{ marque: 'Tecno', modele: 'Spark', statut: 'EN_COURS', updated_at: '2026-11-21T12:00:00.000Z' }],
+        rowCount: 1,
+      };
+    }
+    if (sql.includes('SELECT statut FROM appareils_reparation')) {
+      return { rows: [{ statut: 'EN_COURS' }], rowCount: 1 };
+    }
+    if (sql.includes('INSERT INTO push_subscriptions')) return { rows: [], rowCount: 1 };
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  try {
+    const tracking = await fetch(`${baseUrl}/api/public/appareils/${token}`);
+    assert.equal(tracking.status, 200);
+    const trackingData = await tracking.json();
+    assert.deepEqual(Object.keys(trackingData.appareil).sort(), ['marque', 'modele', 'statut', 'updated_at'].sort());
+    assert.equal(trackingData.appareil.statut, 'EN_COURS');
+    assert.equal(trackingData.push_public_key, vapid.publicKey);
+
+    for (const endpoint of [
+      'http://push.example.invalid/subscription',
+      'https://127.0.0.1/subscription',
+    ]) {
+      const invalid = await fetch(`${baseUrl}/api/public/appareils/${token}/notifications`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subscription: {
+            endpoint,
+            keys: { p256dh: 'a'.repeat(43), auth: 'b'.repeat(22) },
+          },
+        }),
+      });
+      assert.equal(invalid.status, 400);
+    }
+
+    const subscribed = await fetch(`${baseUrl}/api/public/appareils/${token}/notifications`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        subscription: {
+          endpoint: 'https://fcm.googleapis.com/fcm/send/test-subscription',
+          keys: { p256dh: 'a'.repeat(43), auth: 'b'.repeat(22) },
+        },
+      }),
+    });
+    assert.equal(subscribed.status, 201);
+    assert.deepEqual(await subscribed.json(), { active: true });
+    assert.ok(queries.some((sql) => sql.includes('INSERT INTO push_subscriptions')));
+  } finally {
+    db.query = originalQuery;
+    for (const [key, value] of Object.entries({
+      VAPID_PUBLIC_KEY: previousVapid.publicKey,
+      VAPID_PRIVATE_KEY: previousVapid.privateKey,
+      VAPID_SUBJECT: previousVapid.subject,
+    })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('technician QR route creates an app-origin tracking QR', async () => {
+  await startServer();
+  const originalQuery = db.query;
+  const originalBaseUrl = process.env.APP_BASE_URL;
+  const sessionToken = crypto.randomBytes(32).toString('hex');
+  const appareilId = '00000000-0000-4000-8000-000000000023';
+  process.env.APP_BASE_URL = 'https://atelier.example.invalid';
+  db.query = async (sql) => {
+    if (sql.includes('sessions_techniciens')) {
+      return {
+        rows: [{ id: '00000000-0000-4000-8000-000000000001', nom: 'Test', email: 'test@example.invalid', role: 'ADMIN' }],
+        rowCount: 1,
+      };
+    }
+    if (sql.includes('SELECT id FROM appareils_reparation')) {
+      return { rows: [{ id: appareilId }], rowCount: 1 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  try {
+    const response = await fetch(`${baseUrl}/api/appareils/${appareilId}/qr`, {
+      method: 'POST',
+      headers: { Cookie: `${SESSION_COOKIE}=${sessionToken}` },
+    });
+    assert.equal(response.status, 200);
+    const qr = await response.json();
+    assert.equal(qr.url, `https://atelier.example.invalid/suivi?appareil=${appareilId}`);
+    assert.match(qr.qr_code, /^data:image\/png;base64,/);
+  } finally {
+    db.query = originalQuery;
+    if (originalBaseUrl === undefined) delete process.env.APP_BASE_URL;
+    else process.env.APP_BASE_URL = originalBaseUrl;
+  }
+});
+
+test('ready transition queues a Push delivery only when entering PRET', async () => {
+  await startServer();
+  const originalQuery = db.query;
+  const originalVapid = {
+    publicKey: process.env.VAPID_PUBLIC_KEY,
+    privateKey: process.env.VAPID_PRIVATE_KEY,
+    subject: process.env.VAPID_SUBJECT,
+  };
+  const vapid = require('web-push').generateVAPIDKeys();
+  const sessionToken = crypto.randomBytes(32).toString('hex');
+  const appareilId = '00000000-0000-4000-8000-000000000024';
+  let previousStatus = 'EN_COURS';
+  let pushLookups = 0;
+  process.env.VAPID_PUBLIC_KEY = vapid.publicKey;
+  process.env.VAPID_PRIVATE_KEY = vapid.privateKey;
+  process.env.VAPID_SUBJECT = 'mailto:test@example.invalid';
+  db.query = async (sql) => {
+    if (sql.includes('sessions_techniciens')) {
+      return {
+        rows: [{ id: '00000000-0000-4000-8000-000000000001', nom: 'Test', email: 'test@example.invalid', role: 'ADMIN' }],
+        rowCount: 1,
+      };
+    }
+    if (sql.includes('WITH current_device AS')) {
+      return {
+        rows: [{
+          id: appareilId,
+          statut: 'PRET',
+          previous_statut: previousStatus,
+          updated_at: '2026-11-21T12:00:00.000Z',
+        }],
+        rowCount: 1,
+      };
+    }
+    if (sql.includes('FROM push_subscriptions')) {
+      pushLookups += 1;
+      return { rows: [], rowCount: 0 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  try {
+    for (const previous of ['EN_COURS', 'PRET']) {
+      previousStatus = previous;
+      const response = await fetch(`${baseUrl}/api/appareils/${appareilId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: `${SESSION_COOKIE}=${sessionToken}`,
+        },
+        body: JSON.stringify({ statut: 'PRET' }),
+      });
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).statut, 'PRET');
+    }
+    assert.equal(pushLookups, 1);
+  } finally {
+    db.query = originalQuery;
+    for (const [key, value] of Object.entries({
+      VAPID_PUBLIC_KEY: originalVapid.publicKey,
+      VAPID_PRIVATE_KEY: originalVapid.privateKey,
+      VAPID_SUBJECT: originalVapid.subject,
+    })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test('revenue reports validate periods and include only delivered approved repairs', async () => {
@@ -250,7 +439,7 @@ test('stale offline changes are rejected when another device changed the repair'
         rowCount: 1,
       };
     }
-    if (sql.startsWith('UPDATE appareils_reparation')) return { rows: [], rowCount: 0 };
+    if (sql.includes('WITH current_device AS')) return { rows: [], rowCount: 0 };
     if (sql.includes('SELECT *, updated_at::text AS updated_at FROM appareils_reparation')) {
       return {
         rows: [{
