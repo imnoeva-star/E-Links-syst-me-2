@@ -8,6 +8,35 @@ const formatDate = (value) => value
   : '—';
 const statusNames = { DEPOT: 'Dépôt', EN_COURS: 'En cours', PRET: 'Prêt', LIVRE: 'Livré' };
 const statusOrder = ['DEPOT', 'EN_COURS', 'PRET', 'LIVRE'];
+const deviceTypeNames = {
+  TELEPHONE: 'Téléphone',
+  TABLETTE: 'Tablette',
+  ORDINATEUR: 'Ordinateur',
+};
+const brandSuggestions = {
+  TELEPHONE: {
+    popular: ['Tecno', 'Infinix', 'Samsung', 'iPhone', 'Itel', 'Xiaomi'],
+    all: [
+      'Alcatel', 'Apple', 'Asus', 'BlackBerry', 'Google', 'Honor', 'Huawei', 'Infinix',
+      'Itel', 'Lenovo', 'Meizu', 'Motorola', 'Nokia', 'Nothing', 'OnePlus', 'Oppo',
+      'Poco', 'Realme', 'Redmi', 'Samsung', 'Sony', 'Tecno', 'TCL', 'Vivo', 'Wiko', 'ZTE',
+    ],
+  },
+  TABLETTE: {
+    popular: ['Samsung', 'iPad', 'Lenovo', 'Huawei', 'Tecno', 'Infinix'],
+    all: [
+      'Amazon Fire', 'Apple', 'Asus', 'Acer', 'Google', 'Huawei', 'Infinix', 'Itel',
+      'Lenovo', 'Microsoft Surface', 'Nokia', 'Samsung', 'TCL', 'Tecno', 'Xiaomi', 'ZTE',
+    ],
+  },
+  ORDINATEUR: {
+    popular: ['HP', 'Dell', 'Lenovo', 'Apple', 'Asus', 'Acer'],
+    all: [
+      'Acer', 'Apple', 'Asus', 'Dell', 'Fujitsu', 'Google Chromebook', 'HP', 'Huawei',
+      'Lenovo', 'Microsoft Surface', 'MSI', 'Samsung', 'Toshiba', 'Xiaomi',
+    ],
+  },
+};
 const state = {
   approvalId: null,
   hasSignature: false,
@@ -23,6 +52,8 @@ const state = {
   reportPeriod: 'week',
   reportCurrency: 'USD',
   reportData: null,
+  personalReportData: null,
+  workshopSettings: { statistiques_depuis: null },
 };
 const pageTitles = {
   dashboard: 'Tableau de bord',
@@ -30,11 +61,15 @@ const pageTitles = {
   new: 'Nouveau dépôt',
   waiting: 'Salle d’attente',
   archive: 'Archives',
+  settings: 'Paramètres',
   team: 'Équipe et comptes',
 };
 
 function showPage(name, updateUrl = true, loadData = true) {
-  const page = Object.prototype.hasOwnProperty.call(pageTitles, name) ? name : 'dashboard';
+  const requestedPage = Object.prototype.hasOwnProperty.call(pageTitles, name) ? name : 'dashboard';
+  const page = ['settings', 'team'].includes(requestedPage) && state.technician?.role !== 'ADMIN'
+    ? 'dashboard'
+    : requestedPage;
   document.querySelectorAll('.page-view').forEach((view) => {
     view.classList.toggle('hidden', view.id !== `page-${page}`);
   });
@@ -65,6 +100,7 @@ function loadPageData(page) {
   if (page === 'dashboard') return loadDashboard();
   if (page === 'report') return loadRevenueReport();
   if (page === 'waiting' || page === 'archive') return loadDevices(page);
+  if (page === 'settings') return loadSettings();
   return Promise.resolve();
 }
 
@@ -142,6 +178,18 @@ document.querySelectorAll('[data-report-currency]').forEach((button) => {
   });
 });
 window.addEventListener('hashchange', () => showPage(window.location.hash.slice(1), false));
+window.addEventListener('popstate', () => {
+  if ($('#approval-dialog').open) {
+    $('#approval-dialog').close();
+    if (deviceHistoryEntry && !$('#device-dialog').classList.contains('hidden')) {
+      window.history.pushState({ appDeviceDialog: true }, '', window.location.href);
+    }
+    return;
+  }
+  if (!$('#device-dialog').classList.contains('hidden')) {
+    closeDevice({ fromHistory: true });
+  }
+});
 
 function deviceSearchText(device) {
   return [
@@ -150,6 +198,7 @@ function deviceSearchText(device) {
     device.telephone,
     device.marque,
     device.modele,
+    deviceTypeNames[device.type_appareil],
     device.panne,
   ].filter(Boolean).join(' ').toLocaleLowerCase('fr');
 }
@@ -205,9 +254,10 @@ async function offlineRevenueReport(period) {
   if (!['day', 'week', 'month', 'year'].includes(period)) {
     throw new Error('Période de bilan invalide.');
   }
-  const [devices, payments] = await Promise.all([
+  const [devices, payments, settings] = await Promise.all([
     OfflineStore.all('appareils'),
     OfflineStore.all('paiements'),
+    OfflineStore.get('meta', 'settings'),
   ]);
   const deliveredIds = new Set(devices
     .filter((device) => !device.archived_at && device.statut === 'LIVRE' && device.acte_valide)
@@ -218,6 +268,7 @@ async function offlineRevenueReport(period) {
 
   payments.forEach((payment) => {
     if (!deliveredIds.has(payment.appareil_id)) return;
+    if (settings?.statistiques_depuis && kinshasaDateKey(payment.created_at) < settings.statistiques_depuis) return;
     const parts = kinshasaDateParts(payment.created_at);
     const dateKey = `${parts.year}-${parts.month}-${parts.day}`;
     if (period === 'day' && dateKey !== todayKey) return;
@@ -242,10 +293,74 @@ async function offlineRevenueReport(period) {
   };
 }
 
-async function offlineDashboard() {
-  const [devices, payments] = await Promise.all([
+async function offlinePersonalReport(period) {
+  if (!['day', 'week', 'month', 'year'].includes(period)) {
+    throw new Error('Période de bilan invalide.');
+  }
+  const [devices, payments, settings] = await Promise.all([
     OfflineStore.all('appareils'),
     OfflineStore.all('paiements'),
+    OfflineStore.get('meta', 'settings'),
+  ]);
+  const buckets = reportBuckets(period);
+  const todayKey = kinshasaDateKey(new Date());
+  const startKey = period === 'week' ? buckets[0] : todayKey;
+  const totals = {
+    encaissements_usd: 0,
+    encaissements_cdf: 0,
+    depenses_usd: 0,
+    depenses_cdf: 0,
+  };
+  const isInPeriod = (value) => {
+    if (!value) return false;
+    const key = kinshasaDateKey(value);
+    if (period === 'day') return key === todayKey;
+    if (period === 'week') return key >= startKey && key <= todayKey;
+    if (period === 'month') return key.slice(0, 7) === todayKey.slice(0, 7);
+    return key.slice(0, 4) === todayKey.slice(0, 4);
+  };
+
+  payments.forEach((payment) => {
+    if (!isInPeriod(payment.created_at)) return;
+    if (settings?.statistiques_depuis && kinshasaDateKey(payment.created_at) < settings.statistiques_depuis) return;
+    const amount = Math.round(Number(payment.montant) * 100);
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    if (payment.devise === 'USD') totals.encaissements_usd += amount;
+    else if (payment.devise === 'CDF') totals.encaissements_cdf += amount;
+  });
+  devices.forEach((device) => {
+    if (
+      isInPeriod(device.frais_usd_saisis_at) &&
+      (!settings?.statistiques_depuis || kinshasaDateKey(device.frais_usd_saisis_at) >= settings.statistiques_depuis)
+    ) {
+      const usd = Math.round(Number(device.frais_usd || 0) * 100);
+      if (Number.isFinite(usd) && usd >= 0) totals.depenses_usd += usd;
+    }
+    if (
+      isInPeriod(device.frais_cdf_saisis_at) &&
+      (!settings?.statistiques_depuis || kinshasaDateKey(device.frais_cdf_saisis_at) >= settings.statistiques_depuis)
+    ) {
+      const cdf = Math.round(Number(device.frais_cdf || 0) * 100);
+      if (Number.isFinite(cdf) && cdf >= 0) totals.depenses_cdf += cdf;
+    }
+  });
+
+  const amounts = Object.fromEntries(
+    Object.entries(totals).map(([key, amount]) => [key, amount / 100]),
+  );
+  return {
+    period,
+    ...amounts,
+    net_usd: (totals.encaissements_usd - totals.depenses_usd) / 100,
+    net_cdf: (totals.encaissements_cdf - totals.depenses_cdf) / 100,
+  };
+}
+
+async function offlineDashboard() {
+  const [devices, payments, settings] = await Promise.all([
+    OfflineStore.all('appareils'),
+    OfflineStore.all('paiements'),
+    OfflineStore.get('meta', 'settings'),
   ]);
   const visibleDevices = devices.filter((device) => !device.archived_at);
   const deliveredIds = new Set(visibleDevices
@@ -264,6 +379,7 @@ async function offlineDashboard() {
   payments.forEach((payment) => {
     if (!deliveredIds.has(payment.appareil_id)) return;
     const date = kinshasaDateKey(payment.created_at);
+    if (settings?.statistiques_depuis && date < settings.statistiques_depuis) return;
     if (!Object.prototype.hasOwnProperty.call(revenue, date)) return;
     const amount = Number(payment.montant || 0);
     if (payment.devise === 'USD') {
@@ -309,7 +425,7 @@ async function offlineRequest(url, options = {}) {
   }
   if (method === 'GET') {
     if (
-      ['/api/dashboard', '/api/reports/revenue', '/api/clients', '/api/appareils'].includes(pathname) &&
+      ['/api/dashboard', '/api/reports/revenue', '/api/reports/personal', '/api/clients', '/api/appareils'].includes(pathname) &&
       !(await OfflineStore.get('meta', 'captured_at'))
     ) {
       throw new Error('Ouvrez l’application une fois en ligne pour préparer les données hors connexion.');
@@ -317,6 +433,9 @@ async function offlineRequest(url, options = {}) {
     if (pathname === '/api/dashboard') return offlineDashboard();
     if (pathname === '/api/reports/revenue') {
       return offlineRevenueReport(parsedUrl.searchParams.get('period'));
+    }
+    if (pathname === '/api/reports/personal') {
+      return offlinePersonalReport(parsedUrl.searchParams.get('period'));
     }
     if (pathname === '/api/clients') {
       const telephone = (parsedUrl.searchParams.get('telephone') || '').replace(/\D/g, '');
@@ -327,6 +446,9 @@ async function offlineRequest(url, options = {}) {
     }
     if (pathname === '/api/appareils') {
       const section = parsedUrl.searchParams.get('section') || 'waiting';
+      if (section === 'removed') {
+        throw new Error('La restauration des dossiers nécessite une connexion Internet.');
+      }
       const search = (parsedUrl.searchParams.get('q') || '').trim().toLocaleLowerCase('fr');
       const status = parsedUrl.searchParams.get('status') || 'ALL';
       const requestedPage = Math.max(1, Number(parsedUrl.searchParams.get('page')) || 1);
@@ -353,6 +475,9 @@ async function offlineRequest(url, options = {}) {
         pages,
       };
     }
+    if (pathname === '/api/settings' || pathname === '/api/export') {
+      throw new Error('Les paramètres et les sauvegardes nécessitent une connexion Internet.');
+    }
     const deviceMatch = pathname.match(/^\/api\/appareils\/([0-9a-f-]+)$/i);
     if (deviceMatch) {
       const device = await OfflineStore.get('appareils', deviceMatch[1]);
@@ -375,8 +500,10 @@ async function offlineRequest(url, options = {}) {
 
   if (createMatch) {
     const id = body.id || newRequestKey();
+    const typeAppareil = body.type_appareil || 'TELEPHONE';
     const requestKey = headers.get('Idempotency-Key');
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestKey || '') ||
+        !['TELEPHONE', 'TABLETTE', 'ORDINATEUR'].includes(typeAppareil) ||
         typeof body.telephone !== 'string' ||
         typeof body.marque !== 'string' || typeof body.panne !== 'string' ||
         typeof body.nom !== 'string' || typeof body.modele !== 'string' ||
@@ -401,12 +528,17 @@ async function offlineRequest(url, options = {}) {
       client_id: client.id,
       client_nom: body.nom || client.nom || '',
       telephone,
+      type_appareil: typeAppareil,
       marque: body.marque,
       modele: body.modele || '',
       panne: body.panne,
       statut: 'DEPOT',
       prix_convenu: body.prix_convenu,
       prix_devise: 'USD',
+      frais_usd: 0,
+      frais_cdf: 0,
+      frais_usd_saisis_at: null,
+      frais_cdf_saisis_at: null,
       urgent: Boolean(body.urgent),
       archived_at: null,
       request_key: requestKey,
@@ -513,6 +645,26 @@ async function offlineRequest(url, options = {}) {
     if (Object.prototype.hasOwnProperty.call(body, 'prix_convenu')) {
       updatedDevice.prix_convenu = body.prix_convenu;
       updatedDevice.prix_devise = body.prix_devise;
+    }
+    const hasExpensesUsd = Object.prototype.hasOwnProperty.call(body, 'frais_usd');
+    const hasExpensesCdf = Object.prototype.hasOwnProperty.call(body, 'frais_cdf');
+    if (hasExpensesUsd !== hasExpensesCdf) {
+      throw new Error('Saisissez les frais en USD et en FC.');
+    }
+    if (hasExpensesUsd) {
+      const validAmount = (amount) =>
+        typeof amount === 'number' &&
+        Number.isFinite(amount) &&
+        amount >= 0 &&
+        amount <= 9999999999.99 &&
+        Math.round(amount * 100) === amount * 100;
+      if (!validAmount(body.frais_usd) || !validAmount(body.frais_cdf)) {
+        throw new Error('Vérifiez les totaux des frais en USD et en FC.');
+      }
+      if (Number(device.frais_usd || 0) !== body.frais_usd) updatedDevice.frais_usd_saisis_at = now;
+      if (Number(device.frais_cdf || 0) !== body.frais_cdf) updatedDevice.frais_cdf_saisis_at = now;
+      updatedDevice.frais_usd = body.frais_usd;
+      updatedDevice.frais_cdf = body.frais_cdf;
     }
   } else if (deviceMatch && method === 'DELETE') {
     updatedDevice.archived_at = now;
@@ -1011,6 +1163,7 @@ async function showApp(technician, { offline = false, expiresAt } = {}) {
   $('#app-shell').classList.remove('hidden');
   $('#menu-technician-name').textContent = technician.nom;
   $('#team-menu-link').classList.toggle('hidden', technician.role !== 'ADMIN');
+  $('#settings-menu-link').classList.toggle('hidden', technician.role !== 'ADMIN');
   showPage(window.location.hash.slice(1) || 'dashboard', false, false);
   refresh();
   if (!offline) syncPendingOperations();
@@ -1323,11 +1476,18 @@ $('#logout').addEventListener('click', async () => {
 async function loadDashboard() {
   const queue = await OfflineStore.getQueue();
   const hasPendingOperations = queue.length > 0;
-  const data = hasPendingOperations ? await offlineDashboard() : await request('/api/dashboard');
+  const [data, personal] = await Promise.all([
+    hasPendingOperations ? offlineDashboard() : request('/api/dashboard'),
+    hasPendingOperations
+      ? offlinePersonalReport('week')
+      : request('/api/reports/personal?period=week'),
+  ]);
   const syncNote = $('#dashboard-sync-note');
   syncNote.classList.toggle('hidden', !hasPendingOperations);
   $('#revenue-usd').textContent = formatMoney(data.chiffre_semaine_usd, 'USD');
   $('#revenue-cdf').textContent = formatMoney(data.chiffre_semaine_cdf, 'CDF');
+  $('#dashboard-net-usd').textContent = formatMoney(personal.net_usd, 'USD');
+  $('#dashboard-net-cdf').textContent = formatMoney(personal.net_cdf, 'CDF');
   renderRevenueCharts(data.encaissements_journaliers);
   $('#pending-count').textContent = data.appareils_attente;
   $('#urgent-count').textContent = `${data.urgents} urgent${Number(data.urgents) > 1 ? 's' : ''}`;
@@ -1339,7 +1499,7 @@ async function loadDashboard() {
     data.prioritaire.forEach((item) => {
       const li = document.createElement('li');
       li.className = 'flex justify-between gap-2';
-      li.textContent = `${item.marque} ${item.modele} · ${item.panne}`;
+      li.textContent = `${deviceTypeNames[item.type_appareil] || deviceTypeNames.TELEPHONE} · ${item.marque} ${item.modele} · ${item.panne}`;
       const status = document.createElement('span');
       status.className = 'shrink-0 font-semibold text-amber-700';
       status.textContent = statusNames[item.statut];
@@ -1479,15 +1639,41 @@ function renderRevenueReport(data) {
   });
 }
 
+function renderPersonalReport(data) {
+  state.personalReportData = data;
+  const labels = {
+    day: 'Aujourd’hui',
+    week: 'Cette semaine',
+    month: 'Ce mois-ci',
+    year: 'Cette année',
+  };
+  $('#personal-report-range').textContent = labels[data.period] || labels.week;
+  ['usd', 'cdf'].forEach((currency) => {
+    const suffix = currency.toUpperCase();
+    $('#personal-income-' + currency).textContent =
+      formatMoney(data[`encaissements_${currency}`], suffix);
+    $('#personal-costs-' + currency).textContent =
+      formatMoney(data[`depenses_${currency}`], suffix);
+    $('#personal-net-' + currency).textContent =
+      formatMoney(data[`net_${currency}`], suffix);
+  });
+}
+
 async function loadRevenueReport() {
   const period = state.reportPeriod;
   const queue = await OfflineStore.getQueue();
-  const data = queue.length
-    ? await offlineRevenueReport(period)
-    : await request(`/api/reports/revenue?period=${encodeURIComponent(period)}`);
+  const [data, personal] = await Promise.all([
+    queue.length
+      ? offlineRevenueReport(period)
+      : request(`/api/reports/revenue?period=${encodeURIComponent(period)}`),
+    queue.length
+      ? offlinePersonalReport(period)
+      : request(`/api/reports/personal?period=${encodeURIComponent(period)}`),
+  ]);
   if (period !== state.reportPeriod) return;
   $('#report-sync-note').classList.toggle('hidden', queue.length === 0);
   renderRevenueReport(data);
+  renderPersonalReport(personal);
 }
 
 function renderRevenueCharts(dailyRevenue) {
@@ -1581,36 +1767,38 @@ function makeStatusSelect(device) {
   return select;
 }
 
-function renderDeviceList(listId, devices, archived, search) {
+function renderDeviceList(listId, devices, archived, search, removed = false) {
   const list = $(`#${listId}`);
   list.replaceChildren();
   if (!devices.length) {
     list.innerHTML = search
       ? '<li class="text-sm text-slate-400">Aucun résultat pour cette recherche.</li>'
-      : archived
-        ? '<li class="text-sm text-slate-400">Aucun appareil livré dans les archives.</li>'
+      : archived || removed
+        ? removed
+          ? '<li class="text-sm text-slate-400">Aucun dossier archivé.</li>'
+          : '<li class="text-sm text-slate-400">Aucun appareil livré dans les archives.</li>'
         : '<li class="text-sm text-slate-400">Aucun appareil dans la salle d’attente.</li>';
     return;
   }
   devices.forEach((device) => {
     const item = document.createElement('li');
-    item.className = 'cursor-pointer rounded-xl border border-slate-100 p-3 transition hover:border-teal-200';
+      item.className = `${removed ? '' : 'cursor-pointer '}rounded-xl border border-slate-100 p-3 transition hover:border-teal-200`;
     const top = document.createElement('div');
     top.className = 'flex items-start justify-between gap-2';
     const details = document.createElement('div');
     details.className = 'min-w-0 flex-1';
     const title = document.createElement('p');
     title.className = 'font-bold';
-    title.textContent = `${device.marque} ${device.modele}`.trim();
+    title.textContent = `${deviceTypeNames[device.type_appareil] || deviceTypeNames.TELEPHONE} · ${device.marque} ${device.modele}`.trim();
     const description = document.createElement('p');
     description.className = 'text-sm text-slate-500';
     description.textContent = `${device.panne} · ${device.client_nom || device.telephone}`;
-    const openRecord = document.createElement('button');
-    openRecord.type = 'button';
+    const openRecord = document.createElement(removed ? 'div' : 'button');
+    if (!removed) openRecord.type = 'button';
     openRecord.className = 'block w-full text-left';
-    openRecord.setAttribute('aria-label', `Ouvrir le dossier ${title.textContent}`);
+    if (!removed) openRecord.setAttribute('aria-label', `Ouvrir le dossier ${title.textContent}`);
     openRecord.append(title, description);
-    openRecord.addEventListener('click', () => openDevice(device.id, openRecord));
+    if (!removed) openRecord.addEventListener('click', () => openDevice(device.id, openRecord));
     details.append(openRecord);
     if (device.prix_convenu !== null) {
       const price = document.createElement('p');
@@ -1636,21 +1824,25 @@ function renderDeviceList(listId, devices, archived, search) {
     }
     const actions = document.createElement('div');
     actions.className = 'mt-3 flex flex-wrap items-center justify-between gap-2';
-    if (archived) {
+    if (archived || removed) {
       const badge = document.createElement('span');
       badge.className = 'rounded-full bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600';
-      badge.textContent = statusNames[device.statut];
+      badge.textContent = removed
+        ? `Archivé le ${formatDate(device.archived_at)}`
+        : statusNames[device.statut];
       actions.append(badge);
     } else {
       actions.append(makeStatusSelect(device));
     }
-    const dossier = document.createElement('button');
-    dossier.type = 'button';
-    dossier.className = 'rounded-lg bg-slate-100 px-3 py-2 text-xs font-bold';
-    dossier.textContent = 'Ouvrir le dossier';
-    dossier.addEventListener('click', () => openDevice(device.id, dossier));
-    actions.append(dossier);
-    if (!archived && device.statut === 'PRET' && !device.acte_valide) {
+    if (!removed) {
+      const dossier = document.createElement('button');
+      dossier.type = 'button';
+      dossier.className = 'rounded-lg bg-slate-100 px-3 py-2 text-xs font-bold';
+      dossier.textContent = 'Ouvrir le dossier';
+      dossier.addEventListener('click', () => openDevice(device.id, dossier));
+      actions.append(dossier);
+    }
+    if (!archived && !removed && device.statut === 'PRET' && !device.acte_valide) {
       const approve = document.createElement('button');
       approve.type = 'button';
       approve.className = 'rounded-lg bg-teal-700 px-3 py-2 text-xs font-bold text-white';
@@ -1658,49 +1850,78 @@ function renderDeviceList(listId, devices, archived, search) {
       approve.addEventListener('click', () => openApproval(device));
       actions.append(approve);
     }
+    if (removed && state.technician?.role === 'ADMIN') {
+      const restore = document.createElement('button');
+      restore.type = 'button';
+      restore.className = 'rounded-lg bg-teal-700 px-3 py-2 text-xs font-bold text-white';
+      restore.textContent = 'Restaurer';
+      restore.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        restore.disabled = true;
+        try {
+          await request(`/api/appareils/${device.id}/restore`, {
+            method: 'POST',
+            headers: device.updated_at ? { 'X-Record-Version': device.updated_at } : {},
+          });
+          await loadRemovedDevices();
+          await refresh();
+        } catch (error) {
+          alert(error.message);
+          restore.disabled = false;
+        }
+      });
+      actions.append(restore);
+    }
     item.append(top, actions);
-    item.addEventListener('click', (event) => {
-      if (!event.target.closest('button, select')) openDevice(device.id, item);
-    });
+    if (!removed) {
+      item.addEventListener('click', (event) => {
+        if (!event.target.closest('button, select')) openDevice(device.id, item);
+      });
+    }
     list.append(item);
   });
 }
 
 let waitingPage = 1;
 let archivePage = 1;
-const deviceLoadSequence = { waiting: 0, archive: 0 };
+let removedPage = 1;
+const deviceLoadSequence = { waiting: 0, archive: 0, removed: 0 };
 let waitingSearchTimer;
 let archiveSearchTimer;
 
 function updatePagination(section, result) {
-  const isArchive = section === 'archive';
   const page = result.page;
   $(`#${section}-pagination-label`).textContent =
     `${result.total} appareil${result.total === 1 ? '' : 's'} · page ${page}/${result.pages}`;
   $(`#${section}-previous`).disabled = page <= 1;
   $(`#${section}-next`).disabled = page >= result.pages;
-  if (isArchive) archivePage = page;
+  if (section === 'archive') archivePage = page;
+  else if (section === 'removed') removedPage = page;
   else waitingPage = page;
 }
 
 async function loadDevices(section) {
   const sequence = ++deviceLoadSequence[section];
-  const isArchive = section === 'archive';
   const params = new URLSearchParams({
     section,
-    page: String(isArchive ? archivePage : waitingPage),
-    q: $(`#${section}-search`).value.trim(),
+    page: String(section === 'archive' ? archivePage : section === 'removed' ? removedPage : waitingPage),
+    q: section === 'removed' ? '' : $(`#${section}-search`).value.trim(),
   });
-  if (!isArchive) params.set('status', $('#waiting-status').value);
+  if (section === 'waiting') params.set('status', $('#waiting-status').value);
   const result = await request(`/api/appareils?${params}`);
   if (sequence !== deviceLoadSequence[section]) return;
   renderDeviceList(
-    `${section}-list`,
+    section === 'removed' ? 'removed-list' : `${section}-list`,
     result.appareils,
-    isArchive,
+    section === 'archive',
     params.get('q'),
+    section === 'removed',
   );
   updatePagination(section, result);
+}
+
+function loadRemovedDevices() {
+  return loadDevices('removed');
 }
 
 $('#waiting-search').addEventListener('input', () => {
@@ -1733,21 +1954,127 @@ $('#archive-next').addEventListener('click', () => {
   archivePage += 1;
   loadDevices('archive').catch(showConnectionError);
 });
+$('#removed-previous').addEventListener('click', () => {
+  removedPage = Math.max(1, removedPage - 1);
+  loadRemovedDevices().catch(showConnectionError);
+});
+$('#removed-next').addEventListener('click', () => {
+  removedPage += 1;
+  loadRemovedDevices().catch(showConnectionError);
+});
+
+async function loadSettings() {
+  if (state.technician?.role !== 'ADMIN') return;
+  const [settings] = await Promise.all([
+    request('/api/settings'),
+    loadRemovedDevices(),
+  ]);
+  state.workshopSettings = settings;
+  $('#statistics-start-date').value = settings.statistiques_depuis || '';
+  $('#statistics-start-date').max = kinshasaDateKey(new Date());
+  $('#statistics-start-current').textContent = settings.statistiques_depuis
+    ? `Les statistiques commencent le ${new Intl.DateTimeFormat('fr-FR', { dateStyle: 'long', timeZone: 'Africa/Kinshasa' }).format(new Date(`${settings.statistiques_depuis}T12:00:00`))}.`
+    : 'Aucune date de départ définie. Les statistiques utilisent tout l’historique.';
+}
+
+$('#settings-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector('button[type="submit"]');
+  const message = $('#settings-message');
+  const nextDate = $('#statistics-start-date').value || null;
+  button.disabled = true;
+  try {
+    if ((await OfflineStore.getQueue()).length) {
+      throw new Error('Synchronisez les actions en attente avant de modifier les statistiques.');
+    }
+    if (!confirm(nextDate
+      ? `Les bilans ignoreront les encaissements et frais antérieurs au ${nextDate}. Aucune donnée ne sera supprimée. Continuer ?`
+      : 'Supprimer la date de départ ? Les bilans réutiliseront tout l’historique. Continuer ?')) return;
+    message.textContent = 'Enregistrement…';
+    message.className = 'text-sm text-slate-600';
+    state.workshopSettings = await request('/api/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ statistiques_depuis: nextDate }),
+    });
+    await OfflineStore.write('meta', {
+      key: 'settings',
+      statistiques_depuis: state.workshopSettings.statistiques_depuis,
+    });
+    message.textContent = 'Date de départ enregistrée. Les données restent conservées.';
+    message.className = 'text-sm text-teal-800';
+    await refresh();
+  } catch (error) {
+    message.textContent = error.message;
+    message.className = 'text-sm text-red-700';
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$('#export-data').addEventListener('click', async () => {
+  const button = $('#export-data');
+  const message = $('#export-message');
+  button.disabled = true;
+  message.textContent = '';
+  try {
+    if ((await OfflineStore.getQueue()).length) {
+      throw new Error('Synchronisez les actions en attente avant de télécharger la sauvegarde.');
+    }
+    if (!navigator.onLine || state.isOffline) {
+      throw new Error('La sauvegarde nécessite une connexion Internet.');
+    }
+    const backup = await request('/api/export');
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `atelier-express-sauvegarde-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    message.textContent = 'Sauvegarde téléchargée. Conservez ce fichier dans un endroit sûr.';
+    message.className = 'mt-2 text-sm text-teal-800';
+  } catch (error) {
+    message.textContent = error.message;
+    message.className = 'mt-2 text-sm text-red-700';
+  } finally {
+    button.disabled = false;
+  }
+});
 
 let activeDeviceId = null;
+let activeDeviceVersion = null;
 let deviceReturnScrollY = 0;
 let deviceReturnFocus = null;
+let deviceHistoryEntry = false;
 
 async function openDevice(id, trigger = null) {
   try {
     const device = await request(`/api/appareils/${id}`);
     activeDeviceId = device.id;
+    activeDeviceVersion = device.updated_at;
     $('#device-title').textContent = `${device.marque} ${device.modele}`.trim();
     $('#device-client').textContent =
       `${device.client_nom || 'Client'} · ${device.telephone}`;
+    $('#device-type').textContent = deviceTypeNames[device.type_appareil] || deviceTypeNames.TELEPHONE;
     $('#device-fault').textContent = device.panne;
     $('#device-status').textContent = statusNames[device.statut];
     $('#device-priority').textContent = device.urgent ? 'Urgent' : 'Normale';
+    const canManage = state.technician?.role === 'ADMIN' &&
+      device.statut !== 'LIVRE' &&
+      !device.acte_valide;
+    $('#device-edit-toggle').classList.toggle('hidden', !canManage);
+    $('#device-archive-button').classList.toggle('hidden', state.technician?.role !== 'ADMIN');
+    $('#device-edit-section').classList.add('hidden');
+    $('#device-edit-message').textContent = '';
+    $('#edit-client-name').value = device.client_nom || '';
+    $('#edit-client-phone').value = device.telephone || '';
+    $('#edit-device-type').value = device.type_appareil || 'TELEPHONE';
+    $('#edit-device-brand').value = device.marque || '';
+    $('#edit-device-model').value = device.modele || '';
+    $('#edit-device-fault').value = device.panne || '';
+    $('#edit-device-price').value = device.prix_convenu ?? '';
+    $('#edit-device-currency').value = device.prix_devise || 'USD';
+    $('#edit-device-urgent').checked = Boolean(device.urgent);
     $('#device-created').textContent = formatDate(device.created_at);
     $('#device-updated').textContent = formatDate(device.updated_at);
     $('#device-price').textContent = device.prix_convenu === null
@@ -1763,6 +2090,13 @@ async function openDevice(id, trigger = null) {
       : formatMoney(device.solde, device.prix_devise);
     $('#device-summary').textContent =
       `${due} · Reçu : ${formatMoney(device.paiements_usd, 'USD')} + ${formatMoney(device.paiements_cdf, 'CDF')}`;
+    $('#device-expense-usd').value = Number(device.frais_usd || 0) > 0
+      ? String(device.frais_usd)
+      : '';
+    $('#device-expense-cdf').value = Number(device.frais_cdf || 0) > 0
+      ? String(device.frais_cdf)
+      : '';
+    $('#expense-message').textContent = '';
     $('#device-qr-result').classList.add('hidden');
     $('#device-qr-message').textContent = '';
     $('#device-qr-button').disabled = false;
@@ -1788,6 +2122,8 @@ async function openDevice(id, trigger = null) {
     if (deviceView.classList.contains('hidden')) {
       deviceReturnScrollY = window.scrollY;
       deviceReturnFocus = trigger && trigger.matches('button') ? trigger : null;
+      window.history.pushState({ appDeviceDialog: true }, '', window.location.href);
+      deviceHistoryEntry = true;
       $('#app-main').classList.add('hidden');
       deviceView.classList.remove('hidden');
       window.scrollTo(0, 0);
@@ -1797,6 +2133,67 @@ async function openDevice(id, trigger = null) {
     alert(error.message);
   }
 }
+
+$('#device-edit-toggle').addEventListener('click', () => {
+  const section = $('#device-edit-section');
+  section.classList.toggle('hidden');
+  if (!section.classList.contains('hidden')) $('#edit-client-name').focus();
+});
+
+$('#device-edit-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!activeDeviceId || !activeDeviceVersion) return;
+  const button = event.currentTarget.querySelector('button[type="submit"]');
+  const message = $('#device-edit-message');
+  const body = {
+    nom: $('#edit-client-name').value.trim(),
+    telephone: $('#edit-client-phone').value.trim(),
+    type_appareil: $('#edit-device-type').value,
+    marque: $('#edit-device-brand').value.trim(),
+    modele: $('#edit-device-model').value.trim(),
+    panne: $('#edit-device-fault').value.trim(),
+    prix_convenu: $('#edit-device-price').value === '' ? null : Number($('#edit-device-price').value),
+    prix_devise: $('#edit-device-currency').value,
+    urgent: $('#edit-device-urgent').checked,
+  };
+  button.disabled = true;
+  try {
+    if ((await OfflineStore.getQueue()).length) {
+      throw new Error('Synchronisez les actions en attente avant de corriger un dossier.');
+    }
+    message.textContent = 'Enregistrement…';
+    message.className = 'text-sm text-slate-600';
+    await request(`/api/appareils/${activeDeviceId}/details`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+      headers: { 'X-Record-Version': activeDeviceVersion },
+    });
+    await openDevice(activeDeviceId);
+    $('#device-edit-section').classList.add('hidden');
+    await refresh();
+  } catch (error) {
+    message.textContent = error.message;
+    message.className = 'text-sm text-red-700';
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$('#device-archive-button').addEventListener('click', async () => {
+  if (!activeDeviceId || !activeDeviceVersion) return;
+  if (!confirm('Archiver ce dossier ? Il sera masqué des listes, mais vous pourrez le restaurer dans Paramètres.')) return;
+  const deviceId = activeDeviceId;
+  try {
+    await request(`/api/appareils/${deviceId}`, {
+      method: 'DELETE',
+      headers: { 'X-Record-Version': activeDeviceVersion },
+    });
+    closeDevice();
+    await refresh();
+  } catch (error) {
+    alert(error.message);
+  }
+});
 
 async function loadDeviceQr(id) {
   const button = $('#device-qr-button');
@@ -1828,13 +2225,19 @@ $('#device-qr-button').addEventListener('click', () => {
   if (activeDeviceId) loadDeviceQr(activeDeviceId);
 });
 
-function closeDevice() {
+function closeDevice({ fromHistory = false } = {}) {
   $('#device-dialog').classList.add('hidden');
   $('#app-main').classList.remove('hidden');
   window.scrollTo(0, deviceReturnScrollY);
   if (deviceReturnFocus && deviceReturnFocus.isConnected) deviceReturnFocus.focus();
   else $('#menu-toggle').focus();
   deviceReturnFocus = null;
+  activeDeviceId = null;
+  activeDeviceVersion = null;
+  if (!fromHistory && deviceHistoryEntry) {
+    window.history.replaceState(null, '', window.location.href);
+  }
+  deviceHistoryEntry = false;
 }
 
 $('#device-close').addEventListener('click', closeDevice);
@@ -1865,27 +2268,62 @@ function showConnectionError(error) {
   $('#connection-message').classList.remove('hidden');
 }
 
-document.querySelectorAll('#brands .chip, #faults .chip').forEach((button) => {
-  button.className =
-    'rounded-full border border-slate-200 px-3 py-2 text-sm font-semibold active:bg-teal-50';
+const chipClassName = 'rounded-full border border-slate-200 px-3 py-2 text-sm font-semibold active:bg-teal-50';
+const selectedChipClasses = ['border-teal-700', 'bg-teal-50', 'text-teal-800'];
+const updateChipSelection = (group, value) => {
+  group.querySelectorAll('button').forEach((button) => {
+    button.classList.remove(...selectedChipClasses);
+    if (button.dataset.value === value) button.classList.add(...selectedChipClasses);
+  });
+};
+
+function renderBrandOptions() {
+  const type = $('#type-appareil').value;
+  const suggestions = brandSuggestions[type] || brandSuggestions.TELEPHONE;
+  const brandList = $('#brand-suggestions');
+  brandList.replaceChildren(...suggestions.all.map((value) => {
+    const option = document.createElement('option');
+    option.value = value;
+    return option;
+  }));
+  const popularBrands = $('#brands');
+  popularBrands.replaceChildren(...suggestions.popular.map((value) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = chipClassName;
+    button.dataset.value = value;
+    button.textContent = value;
+    return button;
+  }));
+  updateChipSelection(popularBrands, $('#marque').value);
+}
+
+document.querySelectorAll('#faults .chip').forEach((button) => {
+  button.className = chipClassName;
   button.addEventListener('click', () => {
-    const group = button.parentElement;
-    group.querySelectorAll('button').forEach((other) => {
-      other.classList.remove('border-teal-700', 'bg-teal-50', 'text-teal-800');
-    });
-    button.classList.add('border-teal-700', 'bg-teal-50', 'text-teal-800');
-    const target = group.id === 'brands' ? $('#marque') : $('#panne');
-    target.value = button.dataset.value;
-    if (group.id === 'faults') {
-      $('#autre-panne').classList.toggle('hidden', button.dataset.value !== 'Autre');
-      if (button.dataset.value !== 'Autre') $('#autre-panne').value = '';
-    }
+    updateChipSelection($('#faults'), button.dataset.value);
+    $('#panne').value = button.dataset.value;
+    $('#autre-panne').classList.toggle('hidden', button.dataset.value !== 'Autre');
+    if (button.dataset.value !== 'Autre') $('#autre-panne').value = '';
   });
 });
 
+$('#brands').addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-value]');
+  if (!button) return;
+  $('#marque').value = button.dataset.value;
+  updateChipSelection($('#brands'), button.dataset.value);
+});
+$('#marque').addEventListener('input', () => updateChipSelection($('#brands'), $('#marque').value));
+$('#type-appareil').addEventListener('change', renderBrandOptions);
+renderBrandOptions();
+
 let searchTimer;
+let clientLookupSequence = 0;
+let autoFilledClientName = false;
 $('#telephone').addEventListener('input', () => {
   clearTimeout(searchTimer);
+  const lookupSequence = ++clientLookupSequence;
   searchTimer = setTimeout(async () => {
     const match = $('#client-match');
     const telephone = $('#telephone').value.trim();
@@ -1895,22 +2333,50 @@ $('#telephone').addEventListener('input', () => {
     }
     try {
       const clients = await request(`/api/clients?telephone=${encodeURIComponent(telephone)}`);
+      if (
+        lookupSequence !== clientLookupSequence ||
+        normalizedPhone($('#telephone').value) !== normalizedPhone(telephone)
+      ) return;
       if (!clients.length) {
         match.classList.add('hidden');
         return;
       }
       match.textContent = `Client connu : ${clients[0].nom || clients[0].telephone}`;
       match.classList.remove('hidden');
-      if (clients[0].nom) $('#nom').value = clients[0].nom;
+      if (clients[0].nom) {
+        $('#nom').value = clients[0].nom;
+        autoFilledClientName = true;
+      }
     } catch (error) {
       console.error(error);
     }
   }, 250);
+  if (autoFilledClientName) {
+    $('#nom').value = '';
+    autoFilledClientName = false;
+  }
 });
+$('#nom').addEventListener('input', () => { autoFilledClientName = false; });
 
 let submittingIntake = false;
+let intakeNoticeTimer;
 const intakeForm = $('#intake-form');
 const intakeButton = intakeForm.querySelector('button[type="submit"]');
+
+function resetIntakeForm() {
+  clientLookupSequence += 1;
+  clearTimeout(searchTimer);
+  intakeForm.reset();
+  $('#client-match').textContent = '';
+  $('#client-match').classList.add('hidden');
+  $('#autre-panne').classList.add('hidden');
+  $('#autre-panne').value = '';
+  $('#form-message').textContent = '';
+  document.querySelectorAll('#brands .chip, #faults .chip')
+    .forEach((chip) => chip.classList.remove(...selectedChipClasses));
+  autoFilledClientName = false;
+  renderBrandOptions();
+}
 
 intakeForm.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -1925,6 +2391,7 @@ intakeForm.addEventListener('submit', async (event) => {
   const intakeData = {
     telephone: $('#telephone').value.trim(),
     nom: $('#nom').value.trim(),
+    type_appareil: $('#type-appareil').value,
     marque: $('#marque').value,
     modele: $('#modele').value.trim(),
     panne,
@@ -1952,16 +2419,16 @@ intakeForm.addEventListener('submit', async (event) => {
       headers: { 'Idempotency-Key': state.pendingIntake.key },
     });
     state.pendingIntake = null;
-    event.target.reset();
-    document.querySelectorAll('.chip').forEach((chip) =>
-      chip.classList.remove('border-teal-700', 'bg-teal-50', 'text-teal-800'),
-    );
-    $('#autre-panne').classList.add('hidden');
-    message.textContent = 'Dépôt enregistré.';
-    message.className = 'text-sm text-teal-700';
+    resetIntakeForm();
+    $('#intake-notice').textContent =
+      `Dépôt enregistré : ${deviceTypeNames[device.type_appareil] || deviceTypeNames.TELEPHONE} · ${device.marque} ${device.modele || ''}`.trim();
+    $('#intake-notice').classList.remove('hidden');
+    window.clearTimeout(intakeNoticeTimer);
+    intakeNoticeTimer = window.setTimeout(() => {
+      $('#intake-notice').classList.add('hidden');
+    }, 5000);
+    showPage('dashboard', false, false);
     await refresh();
-    await openDevice(device.id);
-    await loadDeviceQr(device.id);
   } catch (error) {
     message.textContent = error.message;
     message.className = 'text-sm text-red-700';
@@ -1970,6 +2437,60 @@ intakeForm.addEventListener('submit', async (event) => {
     intakeButton.disabled = false;
     intakeButton.textContent = 'Enregistrer le dépôt';
     intakeButton.classList.remove('opacity-60');
+  }
+});
+
+let submittingExpense = false;
+$('#expense-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (!activeDeviceId || submittingExpense) return;
+  const form = event.currentTarget;
+  const button = form.querySelector('button[type="submit"]');
+  const message = $('#expense-message');
+  const deviceId = activeDeviceId;
+  const usd = $('#device-expense-usd').value;
+  const cdf = $('#device-expense-cdf').value;
+  const body = {
+    frais_usd: usd ? Number(usd) : 0,
+    frais_cdf: cdf ? Number(cdf) : 0,
+  };
+  if ([body.frais_usd, body.frais_cdf].some((amount) =>
+    !Number.isFinite(amount) || amount < 0 || amount > 9999999999.99 ||
+    Math.round(amount * 100) !== amount * 100
+  )) {
+    message.textContent = 'Saisissez des totaux valides à deux décimales maximum.';
+    message.className = 'text-sm text-red-700';
+    return;
+  }
+  submittingExpense = true;
+  button.disabled = true;
+  button.textContent = 'Enregistrement…';
+  message.textContent = 'Enregistrement des frais…';
+  message.className = 'text-sm text-slate-600';
+  try {
+    const updated = await request(`/api/appareils/${deviceId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+      headers: activeDeviceVersion ? { 'X-Record-Version': activeDeviceVersion } : {},
+    });
+    activeDeviceVersion = updated.updated_at;
+    $('#device-updated').textContent = formatDate(updated.updated_at);
+    $('#device-expense-usd').value = Number(updated.frais_usd || 0) > 0
+      ? String(updated.frais_usd)
+      : '';
+    $('#device-expense-cdf').value = Number(updated.frais_cdf || 0) > 0
+      ? String(updated.frais_cdf)
+      : '';
+    message.textContent = 'Frais enregistrés; ils seront déduits de votre bilan personnel.';
+    message.className = 'text-sm text-teal-800';
+    await refresh();
+  } catch (error) {
+    message.textContent = error.message;
+    message.className = 'text-sm text-red-700';
+  } finally {
+    submittingExpense = false;
+    button.disabled = false;
+    button.textContent = 'Enregistrer le total des frais';
   }
 });
 

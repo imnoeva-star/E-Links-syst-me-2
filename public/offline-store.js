@@ -145,6 +145,10 @@
         records.forEach((record) => stores[name].put(record));
       });
       stores.meta.put({ key: 'captured_at', value: snapshot.captured_at });
+      stores.meta.put({
+        key: 'settings',
+        statistiques_depuis: snapshot.settings && snapshot.settings.statistiques_depuis || null,
+      });
       transaction.oncomplete = resolve;
       transaction.onerror = () => reject(transaction.error);
       transaction.onabort = () => reject(transaction.error || new Error('Échec d’enregistrement des données hors ligne.'));

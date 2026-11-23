@@ -4,10 +4,10 @@
 
 1. Crée une branche de test Neon pour vérifier la migration sans toucher aux données de production.
 2. Dans un terminal avec les variables de cette branche, configure `DATABASE_URL` avec l’URL pooled et `DATABASE_URL_UNPOOLED` avec l’URL directe (sans `-pooler`).
-3. Lance `npm run db:migrate`, puis vérifie `/readyz` et crée un compte avec `npm run create-user`.
+3. Lance `npm run db:migrate -- nom-de-migration.sql` en nommant uniquement les migrations non encore appliquées, puis vérifie `/readyz` et crée un compte avec `npm run create-user`.
 4. Quand cette vérification est satisfaisante, répète la migration et la création de compte sur la branche de production. Les migrations sont versionnées dans `migrations/` et ne sont pas exécutées automatiquement par Render.
 
-Le script lit `.env` en local. Il applique les migrations triées par nom sur l’URL directe. Ne déploie pas sans avoir d’abord appliqué et vérifié la migration sur une branche de test.
+Le script lit `.env` en local. Il peut exécuter toutes les migrations triées par nom ou seulement les fichiers nommés sur l’URL directe; il refuse toute URL contenant `-pooler`. Ne déploie pas sans avoir d’abord appliqué et vérifié les migrations sur une branche de test.
 
 ## Créer les comptes et ateliers
 Chaque inscription depuis « Créer un compte » crée un atelier privé avec son propre administrateur et ses propres données. En local, l’inscription initiale est disponible dès que la base ne contient aucun technicien.
@@ -40,6 +40,10 @@ La production doit être servie en HTTPS. L’écran de connexion propose une se
 Pour tester la récupération en local, configure `APP_BASE_URL` et les paramètres SMTP dans `.env`, puis applique la migration `20261116_account_recovery.sql` avec `npm run db:migrate`. Pour les alertes Push, configure aussi les variables VAPID et applique la migration `20261121_push_notifications.sql` avant de déployer.
 
 La migration `20261122_account_isolation.sql` attribue l’historique existant au premier atelier, crée un espace privé pour chaque compte déjà présent, puis cloisonne clients, appareils, paiements et actes. Teste-la sur une branche Neon avant la production ; les caches hors ligne sont également séparés par espace.
+
+La migration `20261122_device_types_and_personal_costs.sql` ajoute le type d’appareil et les dépenses cumulées par dossier, en USD et en CDF séparément. Les dossiers existants restent des téléphones et commencent avec des frais à zéro. Le bilan personnel compare les paiements et les frais enregistrés pendant la période, uniquement dans le compte connecté. Applique aussi cette migration avant de déployer le code correspondant.
+
+La migration `20261122_workshop_settings.sql` ajoute les paramètres de l’atelier, notamment la date de départ des statistiques. Applique-la avant de déployer les paramètres, l’export et la restauration des dossiers archivés.
 
 Cette migration et le nouveau serveur doivent être mis en service ensemble : l’ancienne version ne renseigne pas `account_id` et la nouvelle exige ces colonnes. Pour la migration de comptes, prévois une courte maintenance : suspends temporairement l’accès à l’application, applique la migration sur la branche de production avec l’URL directe, déploie le nouveau code, vérifie `/readyz` et les deux comptes, puis réouvre l’accès. Ne lance pas la migration de production seule.
 

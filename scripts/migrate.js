@@ -9,13 +9,35 @@ async function main() {
   if (!connectionString) {
     throw new Error('DATABASE_URL_UNPOOLED est requis pour exécuter les migrations.');
   }
+  let connectionUrl;
+  try {
+    connectionUrl = new URL(connectionString);
+  } catch {
+    throw new Error('DATABASE_URL_UNPOOLED doit être une URL PostgreSQL valide.');
+  }
+  if (!['postgres:', 'postgresql:'].includes(connectionUrl.protocol)) {
+    throw new Error('DATABASE_URL_UNPOOLED doit être une URL PostgreSQL valide.');
+  }
+  if (connectionUrl.hostname.toLowerCase().includes('-pooler')) {
+    throw new Error('Utilisez une URL Neon directe (sans -pooler) pour les migrations.');
+  }
+
   const client = new Client({ connectionString, ssl: { rejectUnauthorized: true } });
   await client.connect();
   try {
     const directory = path.join(__dirname, '..', 'migrations');
-    const files = (await fs.readdir(directory))
+    const availableFiles = (await fs.readdir(directory))
       .filter((file) => /^\d{8}_.+\.sql$/.test(file))
       .sort();
+    const requestedFiles = process.argv.slice(2);
+    const files = requestedFiles.length ? requestedFiles : availableFiles;
+    if (
+      new Set(files).size !== files.length ||
+      files.some((file) => !availableFiles.includes(file))
+    ) {
+      throw new Error('Indiquez des noms de migrations existants, sans doublons.');
+    }
+
     for (const file of files) {
       console.log(`Application de ${file}…`);
       await client.query(await fs.readFile(path.join(directory, file), 'utf8'));

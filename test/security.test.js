@@ -101,10 +101,21 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(html, /href="\/styles\.css"/);
   assert.match(html, /id="waiting-next"/);
   assert.match(html, /id="archive-next"/);
+  assert.match(html, /id="settings-menu-link"/);
+  assert.match(html, /id="statistics-start-date"/);
+  assert.match(html, /id="export-data"/);
+  assert.match(html, /id="removed-list"/);
   assert.match(html, /id="app-main"/);
   assert.match(html, /id="device-dialog" aria-labelledby="device-title" class="hidden min-h-screen/);
   assert.match(html, /id="device-close"/);
   assert.match(html, /id="device-fault"/);
+  assert.match(html, /id="device-edit-form"/);
+  assert.match(html, /id="device-archive-button"/);
+  assert.match(html, /id="type-appareil"/);
+  assert.match(html, /id="brand-suggestions"/);
+  assert.match(html, /id="personal-net-usd"/);
+  assert.match(html, /id="device-expense-usd"/);
+  assert.match(html, /id="device-expense-cdf"/);
   assert.match(html, /id="device-approval-clause"/);
   assert.match(html, /id="device-signature"/);
   assert.ok(html.indexOf('id="device-approval"') > html.indexOf('id="payment-form"'));
@@ -123,6 +134,9 @@ test('static app includes local production CSS and the technician login', async 
   assert.equal(script.status, 200);
   const scriptText = await script.text();
   assert.match(scriptText, /playWelcome\(technician\.nom\)/);
+  assert.match(scriptText, /window\.addEventListener\('popstate'/);
+  assert.match(scriptText, /function resetIntakeForm\(\)/);
+  assert.match(scriptText, /\/api\/reports\/personal/);
   assert.match(scriptText, /getCoalescedEvents/);
   assert.match(scriptText, /quadraticCurveTo/);
   assert.match(scriptText, /setPointerCapture\(event\.pointerId\)/);
@@ -173,7 +187,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(pageHtml, /rel="apple-touch-icon" href="\/icon-192\.png"/);
   const serviceWorker = await fetch(`${baseUrl}/service-worker.js`);
   const serviceWorkerText = await serviceWorker.text();
-  assert.match(serviceWorkerText, /atelier-express-v20/);
+  assert.match(serviceWorkerText, /atelier-express-v22/);
   assert.match(serviceWorkerText, /offline-store\.js/);
   assert.match(serviceWorkerText, /icon-512\.png/);
   assert.match(serviceWorkerText, /addEventListener\('push'/);
@@ -235,6 +249,17 @@ test('authenticated business reads and mutations are constrained to the technici
     if (sql.includes('SELECT COUNT(*) AS total')) return { rows: [{ total: '0' }], rowCount: 1 };
     if (sql.includes('WITH semaine AS')) return { rows: [{}], rowCount: 1 };
     if (sql.includes('WITH local_now AS')) return { rows: [], rowCount: 0 };
+    if (sql.includes('WITH personal_local_now AS')) {
+      return {
+        rows: [{
+          encaissements_usd: '120.50',
+          encaissements_cdf: '50000',
+          depenses_usd: '20.25',
+          depenses_cdf: '5000',
+        }],
+        rowCount: 1,
+      };
+    }
     if (sql.includes('WITH current_device AS')) return { rows: [], rowCount: 0 };
     if (sql.startsWith('UPDATE appareils_reparation')) return { rows: [], rowCount: 0 };
     return { rows: [], rowCount: 0 };
@@ -258,8 +283,21 @@ test('authenticated business reads and mutations are constrained to the technici
   try {
     assert.equal((await request('/api/clients?telephone=123')).status, 200);
     assert.equal((await request('/api/appareils')).status, 200);
+    assert.equal((await request('/api/appareils?section=removed')).status, 200);
     assert.equal((await request(`/api/appareils/${deviceId}`)).status, 404);
     assert.equal((await request('/api/reports/revenue?period=week')).status, 200);
+    assert.equal((await request('/api/reports/personal?period=quarter')).status, 400);
+    const personalReport = await request('/api/reports/personal?period=week');
+    assert.equal(personalReport.status, 200);
+    assert.deepEqual(await personalReport.json(), {
+      period: 'week',
+      encaissements_usd: '120.50',
+      encaissements_cdf: '50000',
+      depenses_usd: '20.25',
+      depenses_cdf: '5000',
+      net_usd: 100.25,
+      net_cdf: 45000,
+    });
     assert.equal((await request('/api/dashboard')).status, 200);
     assert.equal((await request('/api/offline/snapshot')).status, 200);
 
@@ -293,8 +331,17 @@ test('authenticated business reads and mutations are constrained to the technici
     assert.deepEqual(scopedQuery('FROM clients').values, ['%123%', tenantId]);
     assert.match(scopedQuery('WITH local_now AS').sql, /a\.account_id = \$1/);
     assert.deepEqual(scopedQuery('WITH local_now AS').values, [tenantId]);
+    const personalQuery = scopedQuery('WITH personal_local_now AS');
+    assert.match(personalQuery.sql, /p\.account_id = \$1/);
+    assert.match(personalQuery.sql, /a\.account_id = \$1/);
+    assert.match(personalQuery.sql, /statistics_settings\.start_date/);
+    assert.deepEqual(personalQuery.values, [tenantId]);
+    assert.match(scopedQuery('WITH local_now AS').sql, /statistics_settings\.start_date/);
     assert.ok(queries.some((entry) => entry.sql.includes('FROM appareils_reparation a') &&
       entry.sql.includes('a.account_id = $1') && entry.values[0] === tenantId));
+    const removedQuery = queries.find((entry) => entry.sql.includes('a.archived_at IS NOT NULL'));
+    assert.ok(removedQuery);
+    assert.equal(removedQuery.values[0], tenantId);
     assert.ok(queries.some((entry) => entry.sql.includes('WITH current_device AS') &&
       entry.sql.includes('account_id = $8') && entry.values[7] === tenantId));
     assert.ok(queries.some((entry) => entry.sql.startsWith('UPDATE appareils_reparation') &&
@@ -307,6 +354,212 @@ test('authenticated business reads and mutations are constrained to the technici
       assert.match(entry.sql, /account_id/);
       assert.ok(entry.values.includes(tenantId));
     }
+  } finally {
+    db.query = originalQuery;
+    db.pool.connect = originalConnect;
+  }
+});
+
+test('workshop settings, exports, and archived-device restoration stay scoped to the administrator account', async () => {
+  await startServer();
+  const originalQuery = db.query;
+  const originalConnect = db.pool.connect;
+  const token = crypto.randomBytes(32).toString('hex');
+  const accountId = AUTHENTICATED_TECHNICIAN.account_id;
+  const queries = [];
+  const transactionQueries = [];
+  let authenticatedTechnician = { ...AUTHENTICATED_TECHNICIAN };
+  db.query = async (sql, values = []) => {
+    if (sql.includes('sessions_techniciens')) {
+      return { rows: [{ ...authenticatedTechnician }], rowCount: 1 };
+    }
+    queries.push({ sql, values });
+    if (sql.includes('SELECT statistiques_depuis::text AS statistiques_depuis')) {
+      return { rows: [{ statistiques_depuis: '2026-11-20' }], rowCount: 1 };
+    }
+    if (sql.includes('INSERT INTO parametres_atelier')) {
+      return { rows: [{ statistiques_depuis: values[1] }], rowCount: 1 };
+    }
+    if (sql.includes('UPDATE appareils_reparation') && sql.includes('archived_at = NULL')) {
+      return { rows: [{ id: '00000000-0000-4000-8000-000000000033', updated_at: '2026-11-22T12:00:00.000Z' }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  };
+  db.pool.connect = async () => ({
+    query: async (sql, values = []) => {
+      transactionQueries.push({ sql, values });
+      if (sql.includes('SELECT statistiques_depuis::text')) {
+        return { rows: [{ statistiques_depuis: '2026-11-20' }], rowCount: 1 };
+      }
+      if (sql.startsWith('SELECT * FROM clients')) return { rows: [{ id: 'client-1' }], rowCount: 1 };
+      if (sql.startsWith('SELECT * FROM appareils_reparation')) return { rows: [{ id: 'device-1' }], rowCount: 1 };
+      if (sql.startsWith('SELECT * FROM paiements')) return { rows: [{ id: 'payment-1' }], rowCount: 1 };
+      if (sql.startsWith('SELECT * FROM actes_approbation')) return { rows: [{ id: 'acte-1' }], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => {},
+  });
+  const request = (path, options = {}) => fetch(`${baseUrl}${path}`, {
+    ...options,
+    headers: {
+      Cookie: `${SESSION_COOKIE}=${token}`,
+      ...(options.headers || {}),
+    },
+  });
+  try {
+    const settings = await request('/api/settings');
+    assert.equal(settings.status, 200);
+    assert.deepEqual(await settings.json(), { statistiques_depuis: '2026-11-20' });
+    assert.deepEqual(queries.find((entry) => entry.sql.includes('SELECT statistiques_depuis::text')).values, [accountId]);
+
+    const invalidDate = await request('/api/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ statistiques_depuis: '2026-02-30' }),
+    });
+    assert.equal(invalidDate.status, 400);
+
+    const updatedSettings = await request('/api/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ statistiques_depuis: '2026-11-21' }),
+    });
+    assert.equal(updatedSettings.status, 200);
+    assert.deepEqual(queries.find((entry) => entry.sql.includes('INSERT INTO parametres_atelier')).values, [
+      accountId,
+      '2026-11-21',
+    ]);
+
+    const backup = await request('/api/export');
+    assert.equal(backup.status, 200);
+    const backupData = await backup.json();
+    assert.equal(backupData.format, 'atelier-express-backup');
+    assert.deepEqual(backupData.clients, [{ id: 'client-1' }]);
+    assert.deepEqual(backupData.appareils_reparation, [{ id: 'device-1' }]);
+    assert.ok(transactionQueries.filter((entry) => entry.sql.startsWith('SELECT')).every((entry) => (
+      entry.values[0] === accountId && entry.sql.includes('account_id = $1')
+    )));
+
+    const restored = await request('/api/appareils/00000000-0000-4000-8000-000000000033/restore', {
+      method: 'POST',
+      headers: { 'X-Record-Version': '2026-11-22T11:00:00.000Z' },
+    });
+    assert.equal(restored.status, 200);
+    const restoreQuery = queries.find((entry) => entry.sql.includes('archived_at = NULL'));
+    assert.deepEqual(restoreQuery.values.slice(1), [
+      '2026-11-22T11:00:00.000Z',
+      accountId,
+    ]);
+
+    authenticatedTechnician = { ...AUTHENTICATED_TECHNICIAN, role: 'TECHNICIEN' };
+    const technicianOnly = await request('/api/settings');
+    assert.equal(technicianOnly.status, 403);
+  } finally {
+    db.query = originalQuery;
+    db.pool.connect = originalConnect;
+  }
+});
+
+test('active repair corrections preserve account boundaries and refuse signed records', async () => {
+  await startServer();
+  const originalQuery = db.query;
+  const originalConnect = db.pool.connect;
+  const token = crypto.randomBytes(32).toString('hex');
+  const accountId = AUTHENTICATED_TECHNICIAN.account_id;
+  const deviceId = '00000000-0000-4000-8000-000000000034';
+  const queries = [];
+  let signed = false;
+  db.query = async (sql) => {
+    if (sql.includes('sessions_techniciens')) {
+      return { rows: [{ ...AUTHENTICATED_TECHNICIAN }], rowCount: 1 };
+    }
+    throw new Error(`Unexpected direct query: ${sql}`);
+  };
+  db.pool.connect = async () => ({
+    query: async (sql, values = []) => {
+      queries.push({ sql, values });
+      if (sql.startsWith('SELECT a.id, a.client_id')) {
+        return {
+          rows: [{
+            id: deviceId,
+            client_id: '00000000-0000-4000-8000-000000000035',
+            statut: 'EN_COURS',
+            updated_at: '2026-11-22T12:00:00.000Z',
+            acte_id: signed ? 'acte-1' : null,
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.startsWith('UPDATE appareils_reparation')) {
+        return {
+          rows: [{
+            id: deviceId,
+            type_appareil: 'TABLETTE',
+            marque: 'Samsung',
+            modele: 'Tab',
+            panne: 'Écran',
+            prix_convenu: '150',
+            prix_devise: 'USD',
+            urgent: true,
+            updated_at: '2026-11-22T12:10:00.000Z',
+          }],
+          rowCount: 1,
+        };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => {},
+  });
+  try {
+    const response = await fetch(`${baseUrl}/api/appareils/${deviceId}/details`, {
+      method: 'PATCH',
+      headers: {
+        Cookie: `${SESSION_COOKIE}=${token}`,
+        'Content-Type': 'application/json',
+        'X-Record-Version': '2026-11-22T12:00:00.000Z',
+      },
+      body: JSON.stringify({
+        nom: 'Client corrigé',
+        telephone: '+243812345678',
+        type_appareil: 'TABLETTE',
+        marque: 'Samsung',
+        modele: 'Tab',
+        panne: 'Écran',
+        prix_convenu: 150,
+        prix_devise: 'USD',
+        urgent: true,
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.ok(queries.some((entry) => entry.sql.startsWith('UPDATE clients') &&
+      entry.values[3] === accountId));
+    assert.ok(queries.some((entry) => entry.sql.startsWith('UPDATE appareils_reparation') &&
+      entry.values[8] === accountId));
+
+    queries.length = 0;
+    signed = true;
+    const rejected = await fetch(`${baseUrl}/api/appareils/${deviceId}/details`, {
+      method: 'PATCH',
+      headers: {
+        Cookie: `${SESSION_COOKIE}=${token}`,
+        'Content-Type': 'application/json',
+        'X-Record-Version': '2026-11-22T12:00:00.000Z',
+      },
+      body: JSON.stringify({
+        nom: 'Client corrigé',
+        telephone: '+243812345678',
+        type_appareil: 'TABLETTE',
+        marque: 'Samsung',
+        modele: 'Tab',
+        panne: 'Écran',
+        prix_convenu: 150,
+        prix_devise: 'USD',
+        urgent: true,
+      }),
+    });
+    assert.equal(rejected.status, 409);
+    assert.equal(queries.some((entry) => entry.sql.startsWith('UPDATE clients')), false);
+    assert.equal(queries.some((entry) => entry.sql.startsWith('UPDATE appareils_reparation')), false);
   } finally {
     db.query = originalQuery;
     db.pool.connect = originalConnect;
@@ -329,9 +582,9 @@ test('public repair tracking exposes no client or payment details and accepts co
   process.env.VAPID_SUBJECT = 'mailto:test@example.invalid';
   db.query = async (sql) => {
     queries.push(sql);
-    if (sql.includes('SELECT marque, modele, statut')) {
+    if (sql.includes('SELECT type_appareil, marque, modele, statut')) {
       return {
-        rows: [{ marque: 'Tecno', modele: 'Spark', statut: 'EN_COURS', updated_at: '2026-11-21T12:00:00.000Z' }],
+        rows: [{ type_appareil: 'TELEPHONE', marque: 'Tecno', modele: 'Spark', statut: 'EN_COURS', updated_at: '2026-11-21T12:00:00.000Z' }],
         rowCount: 1,
       };
     }
@@ -345,7 +598,8 @@ test('public repair tracking exposes no client or payment details and accepts co
     const tracking = await fetch(`${baseUrl}/api/public/appareils/${token}`);
     assert.equal(tracking.status, 200);
     const trackingData = await tracking.json();
-    assert.deepEqual(Object.keys(trackingData.appareil).sort(), ['marque', 'modele', 'statut', 'updated_at'].sort());
+    assert.deepEqual(Object.keys(trackingData.appareil).sort(), ['type_appareil', 'marque', 'modele', 'statut', 'updated_at'].sort());
+    assert.equal(trackingData.appareil.type_appareil, 'TELEPHONE');
     assert.equal(trackingData.appareil.statut, 'EN_COURS');
     assert.equal(trackingData.push_public_key, vapid.publicKey);
 
@@ -548,6 +802,55 @@ test('revenue reports validate periods and include only delivered approved repai
   }
 });
 
+test('repair costs update both currencies and stay scoped to the logged-in account', async () => {
+  await startServer();
+  const originalQuery = db.query;
+  const token = crypto.randomBytes(32).toString('hex');
+  const deviceId = '00000000-0000-4000-8000-000000000033';
+  const accountId = AUTHENTICATED_TECHNICIAN.account_id;
+  let update;
+  db.query = async (sql, values = []) => {
+    if (sql.includes('sessions_techniciens')) {
+      return { rows: [{ ...AUTHENTICATED_TECHNICIAN }], rowCount: 1 };
+    }
+    if (sql.includes('WITH current_device AS')) {
+      update = { sql, values };
+      return {
+        rows: [{
+          id: deviceId,
+          statut: 'LIVRE',
+          frais_usd: '15.25',
+          frais_cdf: '5000',
+          updated_at: '2026-11-22 11:00:00+00',
+          previous_statut: 'LIVRE',
+        }],
+        rowCount: 1,
+      };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  try {
+    const response = await fetch(`${baseUrl}/api/appareils/${deviceId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: `${SESSION_COOKIE}=${token}`,
+      },
+      body: JSON.stringify({ frais_usd: 15.25, frais_cdf: 5000 }),
+    });
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.frais_usd, '15.25');
+    assert.equal(result.frais_cdf, '5000');
+    assert.match(update.sql, /account_id = \$8/);
+    assert.match(update.sql, /frais_usd_saisis_at/);
+    assert.match(update.sql, /frais_cdf_saisis_at/);
+    assert.deepEqual(update.values.slice(7), [accountId, true, 15.25, 5000]);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
 test('stale offline changes are rejected when another device changed the repair', async () => {
   await startServer();
   const originalQuery = db.query;
@@ -602,6 +905,7 @@ test('repair intake accepts a stable client-generated ID for offline synchroniza
     id: deviceId,
     nom: 'Test',
     telephone: '+243812345678',
+    type_appareil: 'TABLETTE',
     marque: 'Tecno',
     modele: 'Spark',
     panne: 'Écran cassé',
@@ -619,6 +923,7 @@ test('repair intake accepts a stable client-generated ID for offline synchroniza
     if (sql.includes('WHERE a.request_key = $1')) return { rows: [], rowCount: 0 };
     if (sql.startsWith('WITH client AS')) {
       insertedValues = values;
+      assert.match(sql, /type_appareil/);
       return {
         rows: [{ id: deviceId, client_id: '00000000-0000-4000-8000-000000000005' }],
         rowCount: 1,
@@ -643,6 +948,44 @@ test('repair intake accepts a stable client-generated ID for offline synchroniza
     assert.equal(insertedValues[2], '+243812345678');
     assert.equal(insertedValues[8], requestKey);
     assert.equal(insertedValues[9], AUTHENTICATED_TECHNICIAN.account_id);
+    assert.equal(insertedValues[10], 'TABLETTE');
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
+test('repair intake rejects device types outside the supported categories', async () => {
+  await startServer();
+  const originalQuery = db.query;
+  const token = crypto.randomBytes(32).toString('hex');
+  let businessQueries = 0;
+  db.query = async (sql) => {
+    if (sql.includes('sessions_techniciens')) {
+      return { rows: [{ ...AUTHENTICATED_TECHNICIAN }], rowCount: 1 };
+    }
+    businessQueries += 1;
+    throw new Error('Invalid device type must be rejected before database writes.');
+  };
+  try {
+    const response = await fetch(`${baseUrl}/api/appareils`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: `${SESSION_COOKIE}=${token}`,
+        'Idempotency-Key': '00000000-0000-4000-8000-000000000034',
+      },
+      body: JSON.stringify({
+        telephone: '+243812345678',
+        type_appareil: 'MONTRE',
+        marque: 'Test',
+        modele: '',
+        panne: 'Écran cassé',
+        prix_convenu: 10,
+        urgent: false,
+      }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal(businessQueries, 0);
   } finally {
     db.query = originalQuery;
   }

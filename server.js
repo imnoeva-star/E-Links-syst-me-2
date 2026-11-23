@@ -42,6 +42,7 @@ app.get('/readyz', async (req, res, next) => {
          to_regclass('public.password_reset_tokens') IS NOT NULL AND
         to_regclass('public.auth_login_attempts') IS NOT NULL AND
         to_regclass('public.push_subscriptions') IS NOT NULL AND
+        to_regclass('public.parametres_atelier') IS NOT NULL AND
         EXISTS (
           SELECT 1 FROM pg_attribute
           WHERE attrelid = to_regclass('public.techniciens')
@@ -71,6 +72,31 @@ app.get('/readyz', async (req, res, next) => {
           SELECT 1 FROM pg_attribute
           WHERE attrelid = to_regclass('public.appareils_reparation')
             AND attname = 'account_id' AND NOT attisdropped
+        ) AND
+        EXISTS (
+          SELECT 1 FROM pg_attribute
+          WHERE attrelid = to_regclass('public.appareils_reparation')
+            AND attname = 'type_appareil' AND NOT attisdropped
+        ) AND
+        EXISTS (
+          SELECT 1 FROM pg_attribute
+          WHERE attrelid = to_regclass('public.appareils_reparation')
+            AND attname = 'frais_usd' AND NOT attisdropped
+        ) AND
+        EXISTS (
+          SELECT 1 FROM pg_attribute
+          WHERE attrelid = to_regclass('public.appareils_reparation')
+            AND attname = 'frais_cdf' AND NOT attisdropped
+        ) AND
+        EXISTS (
+          SELECT 1 FROM pg_attribute
+          WHERE attrelid = to_regclass('public.appareils_reparation')
+            AND attname = 'frais_usd_saisis_at' AND NOT attisdropped
+        ) AND
+        EXISTS (
+          SELECT 1 FROM pg_attribute
+          WHERE attrelid = to_regclass('public.appareils_reparation')
+            AND attname = 'frais_cdf_saisis_at' AND NOT attisdropped
         ) AND
         EXISTS (
           SELECT 1 FROM pg_attribute

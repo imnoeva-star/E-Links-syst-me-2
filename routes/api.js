@@ -7,6 +7,7 @@ const { hashPassword, requireTechnician } = require('../auth');
 
 const router = express.Router();
 const STATUTS = new Set(['DEPOT', 'EN_COURS', 'PRET', 'LIVRE']);
+const DEVICE_TYPES = new Set(['TELEPHONE', 'TABLETTE', 'ORDINATEUR']);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CLAUSE_SORTIE =
   'Appareil testé et accepté par le client. Aucune réclamation ne sera acceptée après 48 heures.';
@@ -57,11 +58,34 @@ function patchMatchesDevice(device, body) {
     const currentPrice = device.prix_convenu === null ? null : Number(device.prix_convenu);
     if (currentPrice !== body.prix_convenu || device.prix_devise !== body.prix_devise) return false;
   }
+  if (Object.prototype.hasOwnProperty.call(body, 'frais_usd')) {
+    if (
+      Number(device.frais_usd || 0) !== body.frais_usd ||
+      Number(device.frais_cdf || 0) !== body.frais_cdf
+    ) return false;
+  }
   return true;
 }
 
 function normalizeTelephone(value) {
   return value.trim().replace(/[\s().-]/g, '');
+}
+
+function validDateOnly(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function kinshasaDateOnly() {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Africa/Kinshasa',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 function paymentMatches(payment, appareilId, montant, devise) {
@@ -92,7 +116,7 @@ router.param('id', (req, res, next, id) => {
 router.get('/public/appareils/:id', async (req, res, next) => {
   try {
     const result = await db.query(
-      `SELECT marque, modele, statut, updated_at::text AS updated_at
+      `SELECT type_appareil, marque, modele, statut, updated_at::text AS updated_at
        FROM appareils_reparation
        WHERE id = $1 AND archived_at IS NULL`,
       [req.params.id],
@@ -248,6 +272,99 @@ router.patch('/techniciens/:id', requireAdmin, async (req, res, next) => {
   }
 });
 
+router.get('/settings', requireAdmin, async (req, res, next) => {
+  try {
+    const result = await db.query(
+      'SELECT statistiques_depuis::text AS statistiques_depuis FROM parametres_atelier WHERE account_id = $1',
+      [req.technicien.account_id],
+    );
+    res.json({ statistiques_depuis: result.rows[0]?.statistiques_depuis || null });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch('/settings', requireAdmin, async (req, res, next) => {
+  const { statistiques_depuis: startDate } = req.body || {};
+  if (
+    (startDate !== null && !validDateOnly(startDate)) ||
+    (typeof startDate === 'string' && startDate > kinshasaDateOnly())
+  ) {
+    return res.status(400).json({ erreur: 'Choisissez une date valide, qui n’est pas dans le futur.' });
+  }
+  try {
+    const result = await db.query(
+      `INSERT INTO parametres_atelier (account_id, statistiques_depuis)
+       VALUES ($1, $2::date)
+       ON CONFLICT (account_id) DO UPDATE
+         SET statistiques_depuis = EXCLUDED.statistiques_depuis, updated_at = NOW()
+       RETURNING statistiques_depuis::text AS statistiques_depuis`,
+      [req.technicien.account_id, startDate],
+    );
+    res.json({ statistiques_depuis: result.rows[0].statistiques_depuis });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/export', requireAdmin, async (req, res, next) => {
+  let client;
+  let transactionStarted = false;
+  try {
+    client = await db.pool.connect();
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    transactionStarted = true;
+    const [settings, clients, appareils, paiements, actes] = await Promise.all([
+      client.query(
+        'SELECT statistiques_depuis::text AS statistiques_depuis FROM parametres_atelier WHERE account_id = $1',
+        [req.technicien.account_id],
+      ),
+      client.query(
+        'SELECT * FROM clients WHERE account_id = $1 ORDER BY created_at, id',
+        [req.technicien.account_id],
+      ),
+      client.query(
+        'SELECT * FROM appareils_reparation WHERE account_id = $1 ORDER BY created_at, id',
+        [req.technicien.account_id],
+      ),
+      client.query(
+        'SELECT * FROM paiements WHERE account_id = $1 ORDER BY created_at, id',
+        [req.technicien.account_id],
+      ),
+      client.query(
+        'SELECT * FROM actes_approbation WHERE account_id = $1 ORDER BY valide_at, id',
+        [req.technicien.account_id],
+      ),
+    ]);
+    await client.query('COMMIT');
+    transactionStarted = false;
+    const generatedAt = new Date();
+    res.setHeader('Content-Disposition', `attachment; filename="atelier-express-sauvegarde-${generatedAt.toISOString().slice(0, 10)}.json"`);
+    res.json({
+      format: 'atelier-express-backup',
+      version: 1,
+      generated_at: generatedAt.toISOString(),
+      account_id: req.technicien.account_id,
+      parametres: settings.rows[0] || { statistiques_depuis: null },
+      clients: clients.rows,
+      appareils_reparation: appareils.rows,
+      paiements: paiements.rows,
+      actes_approbation: actes.rows,
+    });
+  } catch (error) {
+    if (client && transactionStarted) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error(`Échec d’annulation de l’export (${rollbackError.code || 'connexion'}).`);
+      }
+    }
+    next(error);
+  } finally {
+    if (client) client.release();
+  }
+});
+
 // Recherche rapide et création/réutilisation du client par numéro de téléphone.
 router.get('/clients', async (req, res, next) => {
   const rawTelephone = typeof req.query.telephone === 'string' ? req.query.telephone : '';
@@ -293,6 +410,13 @@ router.get('/reports/revenue', async (req, res, next) => {
           date_trunc('${period.range}', instant_local) + INTERVAL '1 ${period.range}' AS end_local
         FROM local_now
       ),
+      statistics_settings AS (
+        SELECT (
+          SELECT statistiques_depuis
+          FROM parametres_atelier
+          WHERE account_id = $1
+        ) AS start_date
+      ),
       buckets AS (
         SELECT generate_series(
           period_bounds.start_local,
@@ -310,12 +434,17 @@ router.get('/reports/revenue', async (req, res, next) => {
         JOIN appareils_reparation a ON a.id = p.appareil_id AND a.account_id = p.account_id
         JOIN actes_approbation acte ON acte.appareil_id = a.id AND acte.account_id = a.account_id
         CROSS JOIN period_bounds
+        CROSS JOIN statistics_settings
         WHERE a.statut = 'LIVRE'
           AND a.account_id = $1
           AND p.account_id = $1
           AND a.archived_at IS NULL
           AND p.created_at >= (period_bounds.start_local AT TIME ZONE 'Africa/Kinshasa')
           AND p.created_at < (period_bounds.end_local AT TIME ZONE 'Africa/Kinshasa')
+          AND (
+            statistics_settings.start_date IS NULL OR
+            p.created_at >= (statistics_settings.start_date::timestamp AT TIME ZONE 'Africa/Kinshasa')
+          )
         GROUP BY 1
       )
       SELECT
@@ -332,6 +461,106 @@ router.get('/reports/revenue', async (req, res, next) => {
   }
 });
 
+router.get('/reports/personal', async (req, res, next) => {
+  const periodName = req.query.period;
+  if (
+    typeof periodName !== 'string' ||
+    !Object.prototype.hasOwnProperty.call(REPORT_PERIODS, periodName)
+  ) {
+    return res.status(400).json({ erreur: 'Période de bilan invalide.' });
+  }
+  const period = REPORT_PERIODS[periodName];
+
+  try {
+    const result = await db.query(`
+      WITH personal_local_now AS (
+        SELECT NOW() AT TIME ZONE 'Africa/Kinshasa' AS instant_local
+      ),
+      period_bounds AS (
+        SELECT
+          date_trunc('${period.range}', instant_local) AS start_local,
+          date_trunc('${period.range}', instant_local) + INTERVAL '1 ${period.range}' AS end_local
+        FROM personal_local_now
+      ),
+      statistics_settings AS (
+        SELECT (
+          SELECT statistiques_depuis
+          FROM parametres_atelier
+          WHERE account_id = $1
+        ) AS start_date
+      )
+      SELECT
+        COALESCE((
+          SELECT SUM(p.montant) FILTER (WHERE p.devise = 'USD')
+          FROM paiements p
+          CROSS JOIN period_bounds
+          CROSS JOIN statistics_settings
+          WHERE p.account_id = $1
+            AND p.created_at >= (period_bounds.start_local AT TIME ZONE 'Africa/Kinshasa')
+            AND p.created_at < (period_bounds.end_local AT TIME ZONE 'Africa/Kinshasa')
+            AND (
+              statistics_settings.start_date IS NULL OR
+              p.created_at >= (statistics_settings.start_date::timestamp AT TIME ZONE 'Africa/Kinshasa')
+            )
+        ), 0) AS encaissements_usd,
+        COALESCE((
+          SELECT SUM(p.montant) FILTER (WHERE p.devise = 'CDF')
+          FROM paiements p
+          CROSS JOIN period_bounds
+          CROSS JOIN statistics_settings
+          WHERE p.account_id = $1
+            AND p.created_at >= (period_bounds.start_local AT TIME ZONE 'Africa/Kinshasa')
+            AND p.created_at < (period_bounds.end_local AT TIME ZONE 'Africa/Kinshasa')
+            AND (
+              statistics_settings.start_date IS NULL OR
+              p.created_at >= (statistics_settings.start_date::timestamp AT TIME ZONE 'Africa/Kinshasa')
+            )
+        ), 0) AS encaissements_cdf,
+        COALESCE((
+          SELECT SUM(a.frais_usd)
+          FROM appareils_reparation a
+          CROSS JOIN period_bounds
+          CROSS JOIN statistics_settings
+          WHERE a.account_id = $1
+            AND a.frais_usd_saisis_at >= (period_bounds.start_local AT TIME ZONE 'Africa/Kinshasa')
+            AND a.frais_usd_saisis_at < (period_bounds.end_local AT TIME ZONE 'Africa/Kinshasa')
+            AND (
+              statistics_settings.start_date IS NULL OR
+              a.frais_usd_saisis_at >= (statistics_settings.start_date::timestamp AT TIME ZONE 'Africa/Kinshasa')
+            )
+        ), 0) AS depenses_usd,
+        COALESCE((
+          SELECT SUM(a.frais_cdf)
+          FROM appareils_reparation a
+          CROSS JOIN period_bounds
+          CROSS JOIN statistics_settings
+          WHERE a.account_id = $1
+            AND a.frais_cdf_saisis_at >= (period_bounds.start_local AT TIME ZONE 'Africa/Kinshasa')
+            AND a.frais_cdf_saisis_at < (period_bounds.end_local AT TIME ZONE 'Africa/Kinshasa')
+            AND (
+              statistics_settings.start_date IS NULL OR
+              a.frais_cdf_saisis_at >= (statistics_settings.start_date::timestamp AT TIME ZONE 'Africa/Kinshasa')
+            )
+        ), 0) AS depenses_cdf
+    `, [req.technicien.account_id]);
+    const totals = result.rows[0];
+    res.json({
+      period: periodName,
+      ...totals,
+      net_usd: (
+        Math.round(Number(totals.encaissements_usd) * 100) -
+        Math.round(Number(totals.depenses_usd) * 100)
+      ) / 100,
+      net_cdf: (
+        Math.round(Number(totals.encaissements_cdf) * 100) -
+        Math.round(Number(totals.depenses_cdf) * 100)
+      ) / 100,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/dashboard', async (req, res, next) => {
   try {
     const result = await db.query(`
@@ -341,6 +570,13 @@ router.get('/dashboard', async (req, res, next) => {
             AT TIME ZONE 'Africa/Kinshasa' AS debut,
           (date_trunc('week', NOW() AT TIME ZONE 'Africa/Kinshasa') + INTERVAL '1 week')
             AT TIME ZONE 'Africa/Kinshasa' AS fin
+      ),
+      statistics_settings AS (
+        SELECT (
+          SELECT statistiques_depuis
+          FROM parametres_atelier
+          WHERE account_id = $1
+        ) AS start_date
       )
       SELECT
         COALESCE((
@@ -349,12 +585,17 @@ router.get('/dashboard', async (req, res, next) => {
           JOIN appareils_reparation a ON a.id = p.appareil_id AND a.account_id = p.account_id
           JOIN actes_approbation acte ON acte.appareil_id = a.id AND acte.account_id = a.account_id
           CROSS JOIN semaine
+          CROSS JOIN statistics_settings
           WHERE a.statut = 'LIVRE'
             AND a.account_id = $1
             AND p.account_id = $1
             AND a.archived_at IS NULL
             AND p.created_at >= semaine.debut
             AND p.created_at < semaine.fin
+            AND (
+              statistics_settings.start_date IS NULL OR
+              p.created_at >= (statistics_settings.start_date::timestamp AT TIME ZONE 'Africa/Kinshasa')
+            )
         ), 0) AS chiffre_semaine_usd,
         COALESCE((
           SELECT SUM(p.montant) FILTER (WHERE p.devise = 'CDF')
@@ -362,12 +603,17 @@ router.get('/dashboard', async (req, res, next) => {
           JOIN appareils_reparation a ON a.id = p.appareil_id AND a.account_id = p.account_id
           JOIN actes_approbation acte ON acte.appareil_id = a.id AND acte.account_id = a.account_id
           CROSS JOIN semaine
+          CROSS JOIN statistics_settings
           WHERE a.statut = 'LIVRE'
             AND a.account_id = $1
             AND p.account_id = $1
             AND a.archived_at IS NULL
             AND p.created_at >= semaine.debut
             AND p.created_at < semaine.fin
+            AND (
+              statistics_settings.start_date IS NULL OR
+              p.created_at >= (statistics_settings.start_date::timestamp AT TIME ZONE 'Africa/Kinshasa')
+            )
         ), 0) AS chiffre_semaine_cdf,
         COUNT(*) FILTER (WHERE statut <> 'LIVRE') AS appareils_attente,
         COUNT(*) FILTER (WHERE urgent = TRUE AND statut <> 'LIVRE') AS urgents
@@ -391,6 +637,13 @@ router.get('/dashboard', async (req, res, next) => {
           (date_trunc('week', NOW() AT TIME ZONE 'Africa/Kinshasa') + INTERVAL '1 week')
             AT TIME ZONE 'Africa/Kinshasa' AS fin
       ),
+      statistics_settings AS (
+        SELECT (
+          SELECT statistiques_depuis
+          FROM parametres_atelier
+          WHERE account_id = $1
+        ) AS start_date
+      ),
       jours AS (
         SELECT
           ((semaine.debut AT TIME ZONE 'Africa/Kinshasa')::date + numero.jour)::date AS jour
@@ -406,12 +659,17 @@ router.get('/dashboard', async (req, res, next) => {
         JOIN appareils_reparation a ON a.id = p.appareil_id AND a.account_id = p.account_id
         JOIN actes_approbation acte ON acte.appareil_id = a.id AND acte.account_id = a.account_id
         CROSS JOIN semaine
+        CROSS JOIN statistics_settings
         WHERE a.statut = 'LIVRE'
           AND a.account_id = $1
           AND p.account_id = $1
           AND a.archived_at IS NULL
           AND p.created_at >= semaine.debut
           AND p.created_at < semaine.fin
+          AND (
+            statistics_settings.start_date IS NULL OR
+            p.created_at >= (statistics_settings.start_date::timestamp AT TIME ZONE 'Africa/Kinshasa')
+          )
         GROUP BY 1
       )
       SELECT
@@ -441,6 +699,10 @@ router.get('/offline/snapshot', async (req, res, next) => {
     transactionStarted = true;
     const clients = await client.query(
       'SELECT id, nom, telephone FROM clients WHERE account_id = $1 ORDER BY created_at DESC',
+      [req.technicien.account_id],
+    );
+    const settings = await client.query(
+      'SELECT statistiques_depuis::text AS statistiques_depuis FROM parametres_atelier WHERE account_id = $1',
       [req.technicien.account_id],
     );
     const appareils = await client.query(
@@ -485,6 +747,7 @@ router.get('/offline/snapshot', async (req, res, next) => {
       clients: clients.rows,
       appareils: appareils.rows,
       paiements: paiements.rows,
+      settings: settings.rows[0] || { statistiques_depuis: null },
       captured_at: new Date().toISOString(),
     });
   } catch (error) {
@@ -508,7 +771,7 @@ router.get('/appareils', async (req, res, next) => {
     PRET: " AND a.statut = 'PRET'",
     URGENT: ' AND a.urgent = TRUE',
   };
-  if (!['waiting', 'archive'].includes(section)) {
+  if (!['waiting', 'archive', 'removed'].includes(section)) {
     return res.status(400).json({ erreur: 'Section d’appareils invalide.' });
   }
   if (
@@ -517,7 +780,7 @@ router.get('/appareils', async (req, res, next) => {
     Number(rawPage) > 100000 ||
     typeof status !== 'string' ||
     !Object.prototype.hasOwnProperty.call(statusFilters, status) ||
-    (section === 'archive' && status !== 'ALL') ||
+    (section !== 'waiting' && status !== 'ALL') ||
     search.length > 120 ||
     (req.query.q !== undefined && typeof req.query.q !== 'string')
   ) {
@@ -526,7 +789,9 @@ router.get('/appareils', async (req, res, next) => {
   const where =
     section === 'archive'
       ? "a.archived_at IS NULL AND a.statut = 'LIVRE'"
-      : `a.archived_at IS NULL AND a.statut <> 'LIVRE'${statusFilters[status]}`;
+      : section === 'removed'
+        ? 'a.archived_at IS NOT NULL'
+        : `a.archived_at IS NULL AND a.statut <> 'LIVRE'${statusFilters[status]}`;
   const searchFilter =
     "($2 = '' OR position(lower($2) in lower(concat_ws(' ', c.nom, c.telephone, a.marque, a.modele, a.panne))) > 0 OR ($3 <> '' AND position($3 in regexp_replace(c.telephone, '[^0-9]', '', 'g')) > 0))";
   try {
@@ -552,7 +817,13 @@ router.get('/appareils', async (req, res, next) => {
          WHERE appareil_id = a.id AND account_id = a.account_id
        ) totaux ON TRUE
        WHERE a.account_id = $1 AND ${where} AND ${searchFilter}
-       ORDER BY ${section === 'waiting' ? 'a.urgent DESC, ' : ''}a.created_at DESC, a.id
+       ORDER BY ${
+         section === 'waiting'
+           ? 'a.urgent DESC, a.created_at DESC'
+           : section === 'removed'
+             ? 'a.archived_at DESC'
+             : 'a.created_at DESC'
+       }, a.id
        LIMIT 50 OFFSET $4`;
     const requestedPage = Number(rawPage);
     const [count, initialResult] = await Promise.all([
@@ -624,6 +895,124 @@ router.get('/appareils/:id', async (req, res, next) => {
   }
 });
 
+router.patch('/appareils/:id/details', requireAdmin, async (req, res, next) => {
+  const body = req.body || {};
+  const telephone = typeof body.telephone === 'string' ? normalizeTelephone(body.telephone) : '';
+  const expectedVersion = req.get('X-Record-Version');
+  if (
+    !validVersion(expectedVersion) ||
+    typeof body.nom !== 'string' ||
+    body.nom.trim().length > 80 ||
+    !/^\+?[0-9]{7,20}$/.test(telephone) ||
+    !DEVICE_TYPES.has(body.type_appareil) ||
+    !isNonEmptyString(body.marque) ||
+    body.marque.trim().length > 60 ||
+    typeof body.modele !== 'string' ||
+    body.modele.trim().length > 100 ||
+    !isNonEmptyString(body.panne) ||
+    body.panne.trim().length > 300 ||
+    (body.prix_convenu !== null && (
+      typeof body.prix_convenu !== 'number' ||
+      !Number.isFinite(body.prix_convenu) ||
+      body.prix_convenu < 0 ||
+      body.prix_convenu > 9999999999.99 ||
+      Math.round(body.prix_convenu * 100) !== body.prix_convenu * 100
+    )) ||
+    !['USD', 'CDF'].includes(body.prix_devise) ||
+    typeof body.urgent !== 'boolean'
+  ) {
+    return res.status(400).json({ erreur: 'Vérifiez les informations du dossier et du client.' });
+  }
+
+  let client;
+  let transactionStarted = false;
+  try {
+    client = await db.pool.connect();
+    await client.query('BEGIN');
+    transactionStarted = true;
+    const current = await client.query(
+      `SELECT a.id, a.client_id, a.statut, a.updated_at::text AS updated_at,
+              acte.id AS acte_id
+       FROM appareils_reparation a
+       JOIN clients c ON c.id = a.client_id AND c.account_id = a.account_id
+       LEFT JOIN actes_approbation acte ON acte.appareil_id = a.id AND acte.account_id = a.account_id
+       WHERE a.id = $1 AND a.account_id = $2 AND a.archived_at IS NULL
+       FOR UPDATE OF a, c`,
+      [req.params.id, req.technicien.account_id],
+    );
+    if (!current.rowCount) {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(404).json({ erreur: 'Dossier introuvable.' });
+    }
+    if (
+      current.rows[0].statut === 'LIVRE' ||
+      current.rows[0].acte_id ||
+      (
+        expectedVersion &&
+        Date.parse(current.rows[0].updated_at) !== Date.parse(expectedVersion)
+      )
+    ) {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(409).json({
+        erreur: current.rows[0].statut === 'LIVRE' || current.rows[0].acte_id
+          ? 'Un dossier livré ou signé ne peut plus être modifié. Archivez-le si nécessaire.'
+          : 'Ce dossier a changé sur un autre appareil. Rechargez-le avant de réessayer.',
+      });
+    }
+    await client.query(
+      'UPDATE clients SET nom = $1, telephone = $2 WHERE id = $3 AND account_id = $4',
+      [body.nom.trim(), telephone, current.rows[0].client_id, req.technicien.account_id],
+    );
+    const updated = await client.query(
+      `UPDATE appareils_reparation
+       SET type_appareil = $1, marque = $2, modele = $3, panne = $4,
+           prix_convenu = $5, prix_devise = $6, urgent = $7, updated_at = NOW()
+       WHERE id = $8 AND account_id = $9 AND archived_at IS NULL AND statut <> 'LIVRE'
+       RETURNING id, type_appareil, marque, modele, panne, prix_convenu, prix_devise,
+                 urgent, updated_at::text AS updated_at`,
+      [
+        body.type_appareil,
+        body.marque.trim(),
+        body.modele.trim(),
+        body.panne.trim(),
+        body.prix_convenu,
+        body.prix_devise,
+        body.urgent,
+        req.params.id,
+        req.technicien.account_id,
+      ],
+    );
+    if (!updated.rowCount) {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(409).json({ erreur: 'Ce dossier ne peut plus être modifié.' });
+    }
+    await client.query('COMMIT');
+    transactionStarted = false;
+    res.json({
+      ...updated.rows[0],
+      client_nom: body.nom.trim(),
+      telephone,
+    });
+  } catch (error) {
+    if (client && transactionStarted) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error(`Échec d’annulation de la modification (${rollbackError.code || 'connexion'}).`);
+      }
+    }
+    if (error.code === '23505' && error.constraint === 'clients_account_telephone_uidx') {
+      return res.status(409).json({ erreur: 'Ce numéro est déjà associé à un autre client de cet atelier.' });
+    }
+    next(error);
+  } finally {
+    if (client) client.release();
+  }
+});
+
 router.post('/appareils/:id/qr', async (req, res, next) => {
   const configuredBaseUrl = process.env.APP_BASE_URL;
   let baseUrl;
@@ -664,6 +1053,7 @@ router.post('/appareils/:id/qr', async (req, res, next) => {
 router.post('/appareils', async (req, res, next) => {
   const body = req.body || {};
   const { id, nom = '', telephone, marque, modele = '', panne, prix_convenu = null, urgent = false } = body;
+  const typeAppareil = body.type_appareil === undefined ? 'TELEPHONE' : body.type_appareil;
   const requestKey = req.get('Idempotency-Key');
   if (!validRequestKey(requestKey)) {
     return res.status(400).json({ erreur: 'Clé de requête invalide. Réessayez le dépôt.' });
@@ -676,9 +1066,10 @@ router.post('/appareils', async (req, res, next) => {
     !isNonEmptyString(marque) ||
     !isNonEmptyString(panne) ||
     (typeof nom !== 'string') ||
-    (typeof modele !== 'string')
+    (typeof modele !== 'string') ||
+    !DEVICE_TYPES.has(typeAppareil)
   ) {
-    return res.status(400).json({ erreur: 'Téléphone, marque et panne sont obligatoires.' });
+    return res.status(400).json({ erreur: 'Type, téléphone, marque et panne sont obligatoires ou invalides.' });
   }
   const normalizedTelephone = normalizeTelephone(telephone);
   if (!/^\+?[0-9]{7,20}$/.test(normalizedTelephone)) {
@@ -714,6 +1105,7 @@ router.post('/appareils', async (req, res, next) => {
       const sameRequest =
         (id === undefined || device.id === id) &&
         device.telephone === normalizedTelephone &&
+        device.type_appareil === typeAppareil &&
         device.marque === marque.trim() &&
         device.modele === modele.trim() &&
         device.panne === panne.trim() &&
@@ -735,8 +1127,8 @@ router.post('/appareils', async (req, res, next) => {
          RETURNING id
        )
        INSERT INTO appareils_reparation
-         (id, account_id, client_id, marque, modele, panne, prix_convenu, urgent, request_key)
-       SELECT COALESCE($1::uuid, gen_random_uuid()), $10, client.id, $4, $5, $6, $7, $8, $9
+         (id, account_id, client_id, type_appareil, marque, modele, panne, prix_convenu, urgent, request_key)
+       SELECT COALESCE($1::uuid, gen_random_uuid()), $10, client.id, $11, $4, $5, $6, $7, $8, $9
        FROM client
        ON CONFLICT (account_id, request_key) DO NOTHING
        RETURNING *, updated_at::text AS updated_at`,
@@ -751,6 +1143,7 @@ router.post('/appareils', async (req, res, next) => {
         urgent,
         requestKey,
         req.technicien.account_id,
+        typeAppareil,
       ],
     );
     if (result.rowCount) return res.status(201).json(result.rows[0]);
@@ -765,6 +1158,7 @@ router.post('/appareils', async (req, res, next) => {
       const sameRequest =
         (id === undefined || device.id === id) &&
         device.telephone === normalizedTelephone &&
+        device.type_appareil === typeAppareil &&
         device.marque === marque.trim() &&
         device.modele === modele.trim() &&
         device.panne === panne.trim() &&
@@ -790,8 +1184,14 @@ router.patch('/appareils/:id', async (req, res, next) => {
   }
   const hasPrice = Object.prototype.hasOwnProperty.call(body, 'prix_convenu');
   const hasPriceCurrency = Object.prototype.hasOwnProperty.call(body, 'prix_devise');
+  const hasExpensesUsd = Object.prototype.hasOwnProperty.call(body, 'frais_usd');
+  const hasExpensesCdf = Object.prototype.hasOwnProperty.call(body, 'frais_cdf');
+  const hasExpenses = hasExpensesUsd || hasExpensesCdf;
   if (hasPrice !== hasPriceCurrency) {
     return res.status(400).json({ erreur: 'Le prix et sa devise doivent être fournis ensemble.' });
+  }
+  if (hasExpensesUsd !== hasExpensesCdf) {
+    return res.status(400).json({ erreur: 'Les totaux des frais en USD et en FC doivent être fournis ensemble.' });
   }
   if (hasPriceCurrency && !['USD', 'CDF'].includes(body.prix_devise)) {
     return res.status(400).json({ erreur: 'La devise du prix doit être USD ou CDF.' });
@@ -805,6 +1205,15 @@ router.patch('/appareils/:id', async (req, res, next) => {
   }
   if (urgent !== undefined && typeof urgent !== 'boolean') {
     return res.status(400).json({ erreur: 'La priorité doit être un booléen.' });
+  }
+  if (hasExpenses && ['frais_usd', 'frais_cdf'].some((field) => (
+    typeof body[field] !== 'number' ||
+    !Number.isFinite(body[field]) ||
+    body[field] < 0 ||
+    body[field] > 9999999999.99 ||
+    Math.round(body[field] * 100) !== body[field] * 100
+  ))) {
+    return res.status(400).json({ erreur: 'Les frais doivent être des montants positifs ou nuls avec au plus deux décimales.' });
   }
   if (prix_convenu !== undefined && prix_convenu !== null) {
     if (
@@ -833,11 +1242,25 @@ router.patch('/appareils/:id', async (req, res, next) => {
              prix_convenu = CASE WHEN $3::boolean THEN $4::numeric ELSE a.prix_convenu END,
              urgent = COALESCE($5, a.urgent),
              prix_devise = CASE WHEN $3::boolean THEN $6::text ELSE a.prix_devise END,
+             frais_usd = CASE WHEN $9::boolean THEN $10::numeric ELSE a.frais_usd END,
+             frais_cdf = CASE WHEN $9::boolean THEN $11::numeric ELSE a.frais_cdf END,
+             frais_usd_saisis_at = CASE
+               WHEN $9::boolean AND a.frais_usd IS DISTINCT FROM $10::numeric THEN NOW()
+               ELSE a.frais_usd_saisis_at
+             END,
+             frais_cdf_saisis_at = CASE
+               WHEN $9::boolean AND a.frais_cdf IS DISTINCT FROM $11::numeric THEN NOW()
+               ELSE a.frais_cdf_saisis_at
+             END,
              updated_at = NOW()
          FROM current_device AS previous
          WHERE a.id = previous.id AND a.account_id = $8
-           AND a.archived_at IS NULL AND a.statut <> 'LIVRE'
+           AND a.archived_at IS NULL
            AND ($7::timestamptz IS NULL OR a.updated_at = $7::timestamptz)
+           AND (
+             previous.statut <> 'LIVRE' OR
+             ($9::boolean AND $2::text IS NULL AND NOT $3::boolean AND $5::boolean IS NULL)
+           )
            AND (
              $2::text IS NULL OR previous.statut = $2 OR
              ($2 = 'EN_COURS' AND previous.statut = 'DEPOT') OR
@@ -855,6 +1278,9 @@ router.patch('/appareils/:id', async (req, res, next) => {
         body.prix_devise === undefined ? null : body.prix_devise,
         expectedVersion || null,
         req.technicien.account_id,
+        hasExpenses,
+        hasExpenses ? body.frais_usd : null,
+        hasExpenses ? body.frais_cdf : null,
       ],
     );
     if (!result.rowCount) {
@@ -870,6 +1296,9 @@ router.patch('/appareils/:id', async (req, res, next) => {
         });
       }
       if (current.rows[0].statut === 'LIVRE') {
+        if (hasExpenses && statut === undefined && !hasPrice && urgent === undefined) {
+          return res.status(409).json({ erreur: 'Ces frais ont déjà changé. Rechargez le dossier avant de réessayer.' });
+        }
         return res.status(409).json({ erreur: 'Un appareil livré ne peut plus être modifié.' });
       }
       return res.status(409).json({ erreur: 'Respectez l’ordre des étapes : dépôt, en cours, puis prêt.' });
@@ -1019,6 +1448,37 @@ router.delete('/appareils/:id', async (req, res, next) => {
       });
     }
     res.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/appareils/:id/restore', requireAdmin, async (req, res, next) => {
+  const expectedVersion = req.get('X-Record-Version');
+  if (!validVersion(expectedVersion)) {
+    return res.status(400).json({ erreur: 'Version du dossier invalide.' });
+  }
+  try {
+    const restored = await db.query(
+      `UPDATE appareils_reparation
+       SET archived_at = NULL, updated_at = NOW()
+       WHERE id = $1 AND account_id = $3 AND archived_at IS NOT NULL
+         AND ($2::timestamptz IS NULL OR updated_at = $2::timestamptz)
+       RETURNING id, updated_at::text AS updated_at`,
+      [req.params.id, expectedVersion || null, req.technicien.account_id],
+    );
+    if (!restored.rowCount) {
+      const current = await db.query(
+        'SELECT archived_at FROM appareils_reparation WHERE id = $1 AND account_id = $2',
+        [req.params.id, req.technicien.account_id],
+      );
+      if (!current.rowCount) return res.status(404).json({ erreur: 'Dossier introuvable.' });
+      if (!current.rows[0].archived_at) return res.status(409).json({ erreur: 'Ce dossier est déjà actif.' });
+      return res.status(409).json({
+        erreur: 'Ce dossier a changé sur un autre appareil. Rechargez la liste avant de réessayer.',
+      });
+    }
+    res.json(restored.rows[0]);
   } catch (error) {
     next(error);
   }

@@ -2,7 +2,7 @@
   "name": "atelier-express",
   "version": "1.0.0",
   "private": true,
-  "description": "MVP mobile-first pour un atelier de réparation de téléphones",
+  "description": "MVP mobile-first pour un atelier de réparation d'appareils",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

@@ -17,6 +17,12 @@ CREATE TABLE techniciens (
 
 CREATE INDEX techniciens_account_idx ON techniciens (account_id);
 
+CREATE TABLE parametres_atelier (
+    account_id UUID PRIMARY KEY REFERENCES techniciens(id) ON DELETE CASCADE,
+    statistiques_depuis DATE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE clients (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     account_id UUID NOT NULL,
@@ -66,6 +72,8 @@ CREATE TABLE appareils_reparation (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     account_id UUID NOT NULL,
     client_id UUID NOT NULL,
+    type_appareil TEXT NOT NULL DEFAULT 'TELEPHONE'
+        CONSTRAINT appareils_type_appareil_check CHECK (type_appareil IN ('TELEPHONE', 'TABLETTE', 'ORDINATEUR')),
     marque TEXT NOT NULL,
     modele TEXT NOT NULL DEFAULT '',
     panne TEXT NOT NULL,
@@ -74,6 +82,12 @@ CREATE TABLE appareils_reparation (
     prix_convenu NUMERIC(12, 2) CHECK (prix_convenu IS NULL OR prix_convenu >= 0),
     prix_devise TEXT NOT NULL DEFAULT 'USD'
         CONSTRAINT appareils_prix_devise_check CHECK (prix_devise IN ('USD', 'CDF')),
+    frais_usd NUMERIC(12, 2) NOT NULL DEFAULT 0
+        CONSTRAINT appareils_frais_usd_check CHECK (frais_usd >= 0),
+    frais_cdf NUMERIC(12, 2) NOT NULL DEFAULT 0
+        CONSTRAINT appareils_frais_cdf_check CHECK (frais_cdf >= 0),
+    frais_usd_saisis_at TIMESTAMPTZ,
+    frais_cdf_saisis_at TIMESTAMPTZ,
     urgent BOOLEAN NOT NULL DEFAULT FALSE,
     archived_at TIMESTAMPTZ,
     request_key UUID NOT NULL DEFAULT gen_random_uuid(),

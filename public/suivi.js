@@ -20,6 +20,11 @@ const statusDetails = {
     progress: 3,
   },
 };
+const deviceTypeNames = {
+  TELEPHONE: 'Téléphone',
+  TABLETTE: 'Tablette',
+  ORDINATEUR: 'Ordinateur',
+};
 const message = document.querySelector('#tracking-message');
 const details = document.querySelector('#tracking-details');
 const statusCard = document.querySelector('#tracking-status-card');
@@ -57,7 +62,8 @@ async function loadTracking() {
   const status = statusDetails[currentStatus];
   if (!status) throw new Error('Le statut de cette réparation est indisponible.');
 
-  document.querySelector('#tracking-device').textContent = `${appareil.marque} ${appareil.modele}`.trim();
+  document.querySelector('#tracking-device').textContent =
+    `${deviceTypeNames[appareil.type_appareil] || deviceTypeNames.TELEPHONE} · ${appareil.marque} ${appareil.modele}`.trim();
   statusCard.dataset.status = currentStatus;
   document.querySelector('#tracking-status').textContent = status.title;
   document.querySelector('#tracking-status-description').textContent = status.description;
