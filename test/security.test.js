@@ -123,6 +123,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(html, /id="device-repair-history"/);
   assert.match(html, /id="device-history-expense-usd"/);
   assert.match(html, /id="device-history-expense-cdf"/);
+  assert.match(html, /id="device-qr-section"/);
   assert.doesNotMatch(html, /id="device-summary"|Reste sur le prix convenu/);
   assert.ok(html.indexOf('id="device-approval"') > html.indexOf('id="payment-form"'));
   assert.match(html, /id="prix"[^>]*required/);
@@ -146,6 +147,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(scriptText, /device-archive-button'\)\.classList\.toggle\('hidden', state\.technician\?\.role !== 'ADMIN' \|\| isDelivered\)/);
   assert.match(scriptText, /device-payments-section'\)\.classList\.remove\('hidden'\)/);
   assert.match(scriptText, /device-repair-history'\)\.classList\.toggle\('hidden', !isDelivered\)/);
+  assert.match(scriptText, /device-qr-section'\)\.classList\.toggle\('hidden', isDelivered\)/);
   assert.match(scriptText, /expense-form'\)\.classList\.toggle\('hidden', isDelivered\)/);
   assert.match(scriptText, /\/api\/reports\/personal/);
   assert.match(scriptText, /getCoalescedEvents/);
@@ -198,7 +200,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(pageHtml, /rel="apple-touch-icon" href="\/icon-192\.png"/);
   const serviceWorker = await fetch(`${baseUrl}/service-worker.js`);
   const serviceWorkerText = await serviceWorker.text();
-  assert.match(serviceWorkerText, /atelier-express-v26/);
+  assert.match(serviceWorkerText, /atelier-express-v27/);
   assert.match(serviceWorkerText, /offline-store\.js/);
   assert.match(serviceWorkerText, /icon-512\.png/);
   assert.match(serviceWorkerText, /addEventListener\('push'/);

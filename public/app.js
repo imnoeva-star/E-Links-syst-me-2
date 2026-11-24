@@ -2045,6 +2045,7 @@ async function openDevice(id, trigger = null) {
     $('#device-repair-history').classList.toggle('hidden', !isDelivered);
     $('#device-history-expense-usd').textContent = formatMoney(device.frais_usd, 'USD');
     $('#device-history-expense-cdf').textContent = formatMoney(device.frais_cdf, 'CDF');
+    $('#device-qr-section').classList.toggle('hidden', isDelivered);
     $('#device-qr-result').classList.add('hidden');
     $('#device-qr-message').textContent = '';
     $('#device-qr-button').disabled = false;
