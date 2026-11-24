@@ -2014,7 +2014,6 @@ async function openDevice(id, trigger = null) {
     $('#device-archive-button').classList.toggle('hidden', state.technician?.role !== 'ADMIN' || isDelivered);
     $('#device-price-row').classList.remove('hidden');
     $('#device-payments-section').classList.remove('hidden');
-    $('#device-summary').classList.remove('hidden');
     $('#device-edit-section').classList.add('hidden');
     $('#device-edit-message').textContent = '';
     $('#edit-client-name').value = device.client_nom || '';
@@ -2033,14 +2032,9 @@ async function openDevice(id, trigger = null) {
       : formatMoney(device.prix_convenu, device.prix_devise);
     $('#device-paid-usd').textContent = formatMoney(device.paiements_usd, 'USD');
     $('#device-paid-cdf').textContent = formatMoney(device.paiements_cdf, 'CDF');
-    const due = device.solde === null
-      ? 'Prix non défini'
-      : `Reste sur le prix convenu : ${formatMoney(device.solde, device.prix_devise)}`;
     $('#device-balance').textContent = device.solde === null
       ? 'Non défini'
       : formatMoney(device.solde, device.prix_devise);
-    $('#device-summary').textContent =
-      `${due} · Reçu : ${formatMoney(device.paiements_usd, 'USD')} + ${formatMoney(device.paiements_cdf, 'CDF')}`;
     $('#device-expense-usd').value = Number(device.frais_usd || 0) > 0
       ? String(device.frais_usd)
       : '';
