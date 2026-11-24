@@ -68,6 +68,22 @@ CREATE TABLE auth_login_attempts (
 CREATE INDEX auth_login_attempt_window_idx
     ON auth_login_attempts (window_started_at);
 
+CREATE TABLE workshop_account_requests (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    nom TEXT NOT NULL CHECK (char_length(nom) BETWEEN 1 AND 80),
+    email TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED', 'EXPIRED', 'CONFIRMED')),
+    code_hash TEXT,
+    code_expires_at TIMESTAMPTZ,
+    code_attempts INTEGER NOT NULL DEFAULT 0,
+    ip_hash TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reviewed_at TIMESTAMPTZ,
+    confirmed_at TIMESTAMPTZ
+);
+
 CREATE TABLE appareils_reparation (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     account_id UUID NOT NULL,

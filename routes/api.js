@@ -205,7 +205,135 @@ router.delete('/public/appareils/:id/notifications', async (req, res, next) => {
 
 router.use(requireTechnician);
 
+router.get('/workshop-requests', requireAdmin, async (req, res, next) => {
+  try {
+    const primary = await db.query(
+      `SELECT id FROM techniciens
+       WHERE role = 'ADMIN' AND account_id = id
+       ORDER BY created_at, id
+       LIMIT 1`,
+    );
+    if (!primary.rowCount || primary.rows[0].id !== req.technicien.account_id) {
+      return res.status(403).json({ erreur: 'Seul l’administrateur principal peut traiter les demandes.' });
+    }
+    await db.query(`
+      UPDATE workshop_account_requests
+      SET status = 'EXPIRED'
+      WHERE status = 'APPROVED'
+        AND code_expires_at IS NOT NULL
+        AND code_expires_at <= NOW()
+    `);
+    const result = await db.query(
+      `SELECT id, nom, email, status, code_expires_at::text AS code_expires_at,
+              code_attempts, created_at::text AS created_at, reviewed_at::text AS reviewed_at
+       FROM workshop_account_requests
+       WHERE status IN ('PENDING', 'APPROVED')
+       ORDER BY created_at DESC`,
+    );
+    res.json(result.rows);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/workshop-requests/:id/approve', requireAdmin, async (req, res, next) => {
+  const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (!UUID_PATTERN.test(req.params.id)) {
+    return res.status(400).json({ erreur: 'Demande invalide.' });
+  }
+  let client;
+  let transactionStarted = false;
+  try {
+    client = await db.pool.connect();
+    await client.query('BEGIN');
+    transactionStarted = true;
+    const primary = await client.query(
+      `SELECT id FROM techniciens
+       WHERE role = 'ADMIN' AND account_id = id
+       ORDER BY created_at, id
+       LIMIT 1
+       FOR UPDATE`,
+    );
+    if (!primary.rowCount || primary.rows[0].id !== req.technicien.account_id) {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(403).json({ erreur: 'Seul l’administrateur principal peut approuver.' });
+    }
+    const requestResult = await client.query(
+      `SELECT id, email FROM workshop_account_requests
+       WHERE id = $1 AND status = 'PENDING'
+       FOR UPDATE`,
+      [req.params.id],
+    );
+    if (!requestResult.rowCount) {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(409).json({ erreur: 'Cette demande n’est plus en attente.' });
+    }
+    const code = String(crypto.randomInt(100000, 1000000));
+    const codeHash = crypto.createHash('sha256').update(code).digest('hex');
+    await client.query(
+      `UPDATE workshop_account_requests
+       SET status = 'APPROVED', code_hash = $2,
+           code_expires_at = NOW() + INTERVAL '3 minutes',
+           code_attempts = 0, reviewed_at = NOW()
+       WHERE id = $1`,
+      [req.params.id, codeHash],
+    );
+    await client.query('COMMIT');
+    transactionStarted = false;
+    res.json({
+      code,
+      expires_in_seconds: 180,
+      email: requestResult.rows[0].email,
+    });
+  } catch (error) {
+    if (client && transactionStarted) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error(`Échec d’annulation de l’approbation (${rollbackError.code || 'connexion'}).`);
+      }
+    }
+    next(error);
+  } finally {
+    if (client) client.release();
+  }
+});
+
+router.post('/workshop-requests/:id/reject', requireAdmin, async (req, res, next) => {
+  const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (!UUID_PATTERN.test(req.params.id)) {
+    return res.status(400).json({ erreur: 'Demande invalide.' });
+  }
+  try {
+    const primary = await db.query(
+      `SELECT id FROM techniciens
+       WHERE role = 'ADMIN' AND account_id = id
+       ORDER BY created_at, id
+       LIMIT 1`,
+    );
+    if (!primary.rowCount || primary.rows[0].id !== req.technicien.account_id) {
+      return res.status(403).json({ erreur: 'Seul l’administrateur principal peut refuser.' });
+    }
+    const result = await db.query(
+      `UPDATE workshop_account_requests
+       SET status = 'REJECTED', reviewed_at = NOW()
+       WHERE id = $1 AND status = 'PENDING'
+       RETURNING id`,
+      [req.params.id],
+    );
+    if (!result.rowCount) return res.status(409).json({ erreur: 'Cette demande n’est plus en attente.' });
+    res.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post('/workshops', requireAdmin, async (req, res, next) => {
+  return res.status(403).json({
+    erreur: 'Créez les ateliers via une demande approuvée par code temporaire.',
+  });
   const { nom, email, password, confirmation } = req.body || {};
   if (
     !validWorkshopName(nom) ||

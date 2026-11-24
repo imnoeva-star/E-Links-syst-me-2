@@ -1200,7 +1200,7 @@ function showLogin(message = '') {
 }
 
 function showAuthForm(formId) {
-  ['login-form', 'password-recovery-form', 'password-reset-form'].forEach((id) => {
+  ['login-form', 'workshop-request-form', 'workshop-confirm-form', 'password-recovery-form', 'password-reset-form'].forEach((id) => {
     $(`#${id}`).classList.toggle('hidden', id !== formId);
   });
 }
@@ -1273,6 +1273,105 @@ $('#login-form').addEventListener('submit', async (event) => {
   } finally {
     button.disabled = false;
     button.textContent = 'Se connecter';
+  }
+});
+
+$('#show-workshop-request').addEventListener('click', () => {
+  showAuthForm('workshop-request-form');
+  $('#workshop-request-message').textContent = '';
+  $('#workshop-request-name').focus();
+});
+
+$('#workshop-request-back').addEventListener('click', () => showLogin());
+
+$('#workshop-request-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector('button[type="submit"]');
+  const message = $('#workshop-request-message');
+  const password = $('#workshop-request-password').value;
+  const confirmation = $('#workshop-request-confirmation').value;
+  if (password !== confirmation) {
+    message.textContent = 'Les mots de passe ne correspondent pas.';
+    message.className = 'mt-3 text-sm text-red-700';
+    return;
+  }
+  button.disabled = true;
+  button.textContent = 'Envoi…';
+  message.textContent = '';
+  try {
+    const result = await request('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        nom: $('#workshop-request-name').value.trim(),
+        email: $('#workshop-request-email').value.trim(),
+        password,
+        confirmation,
+      }),
+    });
+    const requestedEmail = $('#workshop-request-email').value.trim();
+    form.reset();
+    $('#workshop-confirm-request-id').value = result.request_id;
+    $('#workshop-confirm-email').value = requestedEmail;
+    try {
+      window.localStorage.setItem('atelier-express-workshop-request', JSON.stringify({
+        request_id: result.request_id,
+        email: requestedEmail,
+      }));
+    } catch (error) {
+      console.error('Échec de mémorisation temporaire de la demande d’atelier.', error);
+    }
+    showAuthForm('workshop-confirm-form');
+    $('#workshop-confirm-message').textContent =
+      'Demande envoyée. Dès l’approbation, saisissez ici le code que l’administrateur vous communiquera.';
+    $('#workshop-confirm-message').className = 'mt-3 text-sm text-teal-800';
+  } catch (error) {
+    message.textContent = error.message;
+    message.className = 'mt-3 text-sm text-red-700';
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Envoyer la demande';
+  }
+});
+
+$('#workshop-confirm-back').addEventListener('click', () => showLogin());
+
+try {
+  const pendingRequest = JSON.parse(window.localStorage.getItem('atelier-express-workshop-request') || 'null');
+  if (pendingRequest?.request_id && pendingRequest?.email) {
+    $('#workshop-confirm-request-id').value = pendingRequest.request_id;
+    $('#workshop-confirm-email').value = pendingRequest.email;
+  }
+} catch (error) {
+  console.error('Échec de restauration de la demande d’atelier.', error);
+}
+
+$('#workshop-confirm-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector('button[type="submit"]');
+  const message = $('#workshop-confirm-message');
+  button.disabled = true;
+  button.textContent = 'Confirmation…';
+  message.textContent = '';
+  try {
+    const result = await request('/api/auth/workshop-request/confirm', {
+      method: 'POST',
+      body: JSON.stringify({
+        request_id: $('#workshop-confirm-request-id').value,
+        email: $('#workshop-confirm-email').value.trim(),
+        code: $('#workshop-confirm-code').value,
+      }),
+    });
+    $('#workshop-confirm-code').value = '';
+    window.localStorage.removeItem('atelier-express-workshop-request');
+    await showApp(result.technicien, { expiresAt: result.session_expires_at });
+  } catch (error) {
+    message.textContent = error.message;
+    message.className = 'mt-3 text-sm text-red-700';
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Confirmer la création';
   }
 });
 
@@ -1871,18 +1970,86 @@ $('#removed-next').addEventListener('click', () => {
   loadRemovedDevices().catch(showConnectionError);
 });
 
+function renderWorkshopRequests(requests) {
+  const list = $('#workshop-request-list');
+  list.replaceChildren();
+  if (!requests.length) {
+    const empty = document.createElement('li');
+    empty.className = 'text-sm text-slate-400';
+    empty.textContent = 'Aucune demande en attente.';
+    list.append(empty);
+    return;
+  }
+  requests.forEach((request) => {
+    const item = document.createElement('li');
+    item.className = 'rounded-xl border border-slate-200 p-3';
+    const name = document.createElement('p');
+    name.className = 'font-bold';
+    name.textContent = `${request.nom} · ${request.email}`;
+    const status = document.createElement('p');
+    status.className = 'mt-1 text-xs text-slate-500';
+    status.textContent = request.status === 'APPROVED'
+      ? 'Approuvée · code valable 3 minutes'
+      : 'En attente';
+    item.append(name, status);
+    if (request.status === 'PENDING') {
+      const actions = document.createElement('div');
+      actions.className = 'mt-3 flex gap-2';
+      const approve = document.createElement('button');
+      approve.type = 'button';
+      approve.className = 'flex-1 rounded-lg bg-teal-700 px-3 py-2 text-sm font-bold text-white';
+      approve.textContent = 'Approuver';
+      approve.addEventListener('click', async () => {
+        approve.disabled = true;
+        try {
+          const result = await request(`/api/workshop-requests/${request.id}/approve`, { method: 'POST' });
+          $('#workshop-request-admin-message').textContent =
+            `Code pour ${result.email} : ${result.code} · valable 3 minutes. Communiquez-le au demandeur.`;
+          $('#workshop-request-admin-message').className = 'mt-3 text-sm font-bold text-teal-800';
+          await loadSettings();
+        } catch (error) {
+          $('#workshop-request-admin-message').textContent = error.message;
+          $('#workshop-request-admin-message').className = 'mt-3 text-sm text-red-700';
+        }
+      });
+      const reject = document.createElement('button');
+      reject.type = 'button';
+      reject.className = 'rounded-lg bg-slate-100 px-3 py-2 text-sm font-bold text-slate-700';
+      reject.textContent = 'Refuser';
+      reject.addEventListener('click', async () => {
+        reject.disabled = true;
+        try {
+          await request(`/api/workshop-requests/${request.id}/reject`, { method: 'POST' });
+          await loadSettings();
+        } catch (error) {
+          $('#workshop-request-admin-message').textContent = error.message;
+          $('#workshop-request-admin-message').className = 'mt-3 text-sm text-red-700';
+        }
+      });
+      actions.append(approve, reject);
+      item.append(actions);
+    }
+    list.append(item);
+  });
+}
+
 async function loadSettings() {
   if (state.technician?.role !== 'ADMIN') return;
-  const [settings] = await Promise.all([
+  const [settings, requests] = await Promise.all([
     request('/api/settings'),
-    loadRemovedDevices(),
+    request('/api/workshop-requests').catch((error) => {
+      if (error.status === 403) return [];
+      throw error;
+    }),
   ]);
+  await loadRemovedDevices();
   state.workshopSettings = settings;
   $('#statistics-start-date').value = settings.statistiques_depuis || '';
   $('#statistics-start-date').max = kinshasaDateKey(new Date());
   $('#statistics-start-current').textContent = settings.statistiques_depuis
     ? `Les statistiques commencent le ${new Intl.DateTimeFormat('fr-FR', { dateStyle: 'long', timeZone: 'Africa/Kinshasa' }).format(new Date(`${settings.statistiques_depuis}T12:00:00`))}.`
     : 'Aucune date de départ définie. Les statistiques utilisent tout l’historique.';
+  renderWorkshopRequests(requests);
 }
 
 $('#settings-form').addEventListener('submit', async (event) => {
@@ -1916,46 +2083,6 @@ $('#settings-form').addEventListener('submit', async (event) => {
     message.className = 'text-sm text-red-700';
   } finally {
     button.disabled = false;
-  }
-});
-
-$('#workshop-account-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const button = form.querySelector('button[type="submit"]');
-  const message = $('#workshop-account-message');
-  const password = $('#workshop-account-password').value;
-  const confirmation = $('#workshop-account-confirmation').value;
-  if (password !== confirmation) {
-    message.textContent = 'Les mots de passe ne correspondent pas.';
-    message.className = 'text-sm text-red-700';
-    return;
-  }
-  button.disabled = true;
-  button.textContent = 'Création…';
-  message.textContent = '';
-  try {
-    if (state.isOffline || !navigator.onLine) {
-      throw new Error('Reconnectez-vous à Internet pour créer un nouvel atelier.');
-    }
-    await request('/api/workshops', {
-      method: 'POST',
-      body: JSON.stringify({
-        nom: $('#workshop-account-name').value.trim(),
-        email: $('#workshop-account-email').value.trim(),
-        password,
-        confirmation,
-      }),
-    });
-    form.reset();
-    message.textContent = 'Nouvel atelier créé. Son propriétaire peut maintenant se connecter.';
-    message.className = 'text-sm text-teal-700';
-  } catch (error) {
-    message.textContent = error.message;
-    message.className = 'text-sm text-red-700';
-  } finally {
-    button.disabled = false;
-    button.textContent = 'Créer l’atelier indépendant';
   }
 });
 

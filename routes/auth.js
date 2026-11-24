@@ -15,6 +15,20 @@ const { passwordResetEmailConfigured, sendPasswordResetEmail } = require('../ema
 const router = express.Router();
 const dummyPasswordHash = hashPassword(crypto.randomBytes(6).toString('hex'));
 
+function ipHash(req) {
+  return crypto.createHash('sha256').update(req.ip || 'unknown').digest('hex');
+}
+
+function cleanExpiredRequests() {
+  return db.query(`
+    UPDATE workshop_account_requests
+    SET status = 'EXPIRED'
+    WHERE status = 'APPROVED'
+      AND code_expires_at IS NOT NULL
+      AND code_expires_at <= NOW()
+  `);
+}
+
 function validEmail(value) {
   return typeof value === 'string' &&
     value.length <= 254 &&
@@ -40,10 +54,10 @@ router.get('/setup', async (req, res, next) => {
   try {
     res.set('Cache-Control', 'no-store');
     res.json({
-      available: false,
+      available: true,
       codeRequired: false,
       isFirstAccount: false,
-      configurationRequired: true,
+      configurationRequired: false,
       passwordRecoveryAvailable: passwordResetEmailConfigured(),
     });
   } catch (error) {
@@ -58,60 +72,163 @@ router.post('/register', async (req, res, next) => {
       erreur: 'Vérifiez le nom, l’e-mail et le mot de passe (6 à 12 caractères).',
     });
   }
-  return res.status(403).json({
-    erreur: 'La création d’un atelier est réservée à l’administrateur principal depuis les Paramètres.',
-  });
+  const emailAddress = email.trim().toLowerCase();
+  let client;
+  let transactionStarted = false;
+  try {
+    await cleanExpiredRequests();
+    const recent = await db.query(
+      `SELECT COUNT(*) AS total
+       FROM workshop_account_requests
+       WHERE ip_hash = $1 AND created_at > NOW() - INTERVAL '1 hour'`,
+      [ipHash(req)],
+    );
+    if (Number(recent.rows[0]?.total || 0) >= 5) {
+      return res.status(429).json({
+        erreur: 'Trop de demandes. Réessayez dans une heure.',
+      });
+    }
+    client = await db.pool.connect();
+    await client.query('BEGIN');
+    transactionStarted = true;
+    const existingTechnician = await client.query(
+      'SELECT id FROM techniciens WHERE email = LOWER($1)',
+      [emailAddress],
+    );
+    if (existingTechnician.rowCount) {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(409).json({ erreur: 'Cette adresse e-mail est déjà utilisée.' });
+    }
+    const activeRequest = await client.query(
+      `SELECT id FROM workshop_account_requests
+       WHERE LOWER(email) = $1 AND status IN ('PENDING', 'APPROVED')`,
+      [emailAddress],
+    );
+    if (activeRequest.rowCount) {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(409).json({
+        erreur: 'Une demande est déjà en attente pour cette adresse.',
+      });
+    }
+    const requestId = crypto.randomUUID();
+    const passwordHash = await hashPassword(password);
+    await client.query(
+      `INSERT INTO workshop_account_requests
+       (id, nom, email, password_hash, ip_hash)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [requestId, nom.trim(), emailAddress, passwordHash, ipHash(req)],
+    );
+    await client.query('COMMIT');
+    transactionStarted = false;
+    res.status(201).json({
+      request_id: requestId,
+      message: 'Demande envoyée à l’administrateur. Attendez sa confirmation.',
+    });
+  } catch (error) {
+    if (client && transactionStarted) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error(`Échec d’annulation de la création du compte (${rollbackError.code || 'connexion'}).`);
+      }
+    }
+    next(error);
+  } finally {
+    if (client) client.release();
+  }
+});
 
+router.post('/workshop-request/confirm', async (req, res, next) => {
+  const { request_id: requestId, email, code } = req.body || {};
+  const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (
+    !UUID_PATTERN.test(requestId || '') ||
+    typeof email !== 'string' ||
+    !/^\d{6}$/.test(code || '')
+  ) {
+    return res.status(400).json({ erreur: 'Demande ou code invalide.' });
+  }
   let client;
   let transactionStarted = false;
   try {
     client = await db.pool.connect();
     await client.query('BEGIN');
     transactionStarted = true;
-    await client.query('SELECT pg_advisory_xact_lock($1)', [874221905]);
-    const existing = await client.query('SELECT EXISTS (SELECT 1 FROM techniciens) AS has_technicians');
-    const hasTechnicians = existing.rows[0].has_technicians;
-    const role = 'ADMIN';
-    const requiredCode = hasTechnicians
-      ? process.env.TECHNICIAN_INVITE_CODE
-      : process.env.INITIAL_SETUP_CODE;
-    if (hasTechnicians && !requiredCode) {
+    const requestResult = await client.query(
+      `SELECT id, nom, email, password_hash, code_hash, code_expires_at, code_attempts
+       FROM workshop_account_requests
+       WHERE id = $1 AND LOWER(email) = LOWER($2)
+         AND status = 'APPROVED'
+       FOR UPDATE`,
+      [requestId, email.trim()],
+    );
+    if (!requestResult.rowCount) {
       await client.query('ROLLBACK');
       transactionStarted = false;
-      return res.status(503).json({ erreur: 'L’administrateur doit configurer le code d’invitation.' });
+      return res.status(409).json({ erreur: 'Cette demande a expiré ou n’est plus approuvée.' });
     }
+    const request = requestResult.rows[0];
     if (
-      process.env.NODE_ENV === 'production' &&
-      (!requiredCode || requiredCode.length < 16)
+      !request.code_expires_at ||
+      new Date(request.code_expires_at).getTime() <= Date.now()
     ) {
+      await client.query(
+        `UPDATE workshop_account_requests SET status = 'EXPIRED' WHERE id = $1`,
+        [requestId],
+      );
+      await client.query('COMMIT');
+      transactionStarted = false;
+      return res.status(410).json({ erreur: 'Le code a expiré. Demandez une nouvelle approbation.' });
+    }
+    if (Number(request.code_attempts || 0) >= 5) {
       await client.query('ROLLBACK');
       transactionStarted = false;
-      return res.status(503).json({ erreur: 'Le code requis doit contenir au moins 16 caractères.' });
+      return res.status(429).json({ erreur: 'Trop de tentatives. Demandez une nouvelle approbation.' });
     }
-    if (
-      (hasTechnicians || process.env.NODE_ENV === 'production') &&
-      !setupCodeMatches(code, requiredCode)
-    ) {
+    const codeHash = crypto.createHash('sha256').update(String(code)).digest('hex');
+    const supplied = Buffer.from(codeHash);
+    const expected = Buffer.from(request.code_hash || '');
+    const validCode = supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
+    if (!validCode) {
+      await client.query(
+        `UPDATE workshop_account_requests
+         SET code_attempts = code_attempts + 1
+         WHERE id = $1`,
+        [requestId],
+      );
+      await client.query('COMMIT');
+      transactionStarted = false;
+      return res.status(401).json({ erreur: 'Code incorrect.' });
+    }
+    const existing = await client.query(
+      'SELECT id FROM techniciens WHERE email = LOWER($1)',
+      [email.trim().toLowerCase()],
+    );
+    if (existing.rowCount) {
       await client.query('ROLLBACK');
       transactionStarted = false;
-      return res.status(403).json({
-        erreur: hasTechnicians ? 'Code d’invitation incorrect.' : 'Code de première configuration incorrect.',
-      });
+      return res.status(409).json({ erreur: 'Cette adresse e-mail est déjà utilisée.' });
     }
-
     const accountId = crypto.randomUUID();
     const technician = await client.query(
       `INSERT INTO techniciens (id, account_id, nom, email, password_hash, role)
-       VALUES ($1, $1, $2, LOWER($3), $4, $5)
+       VALUES ($1, $1, $2, LOWER($3), $4, 'ADMIN')
        RETURNING id, account_id, nom, email, role`,
-      [accountId, nom.trim(), email.trim(), await hashPassword(password), role],
+      [accountId, request.nom, request.email, request.password_hash],
+    );
+    await client.query(
+      `UPDATE workshop_account_requests
+       SET status = 'CONFIRMED', confirmed_at = NOW()
+       WHERE id = $1`,
+      [requestId],
     );
     const token = crypto.randomBytes(32).toString('hex');
-    const lifetimeSeconds = sessionLifetimeSeconds(remember === true);
-    const session = await client.query(
+    const lifetimeSeconds = sessionLifetimeSeconds(true);
+    await client.query(
       `INSERT INTO sessions_techniciens (technicien_id, token_hash, expires_at)
-       VALUES ($1, $2, NOW() + ($3 * INTERVAL '1 second'))
-       RETURNING expires_at`,
+       VALUES ($1, $2, NOW() + ($3 * INTERVAL '1 second'))`,
       [technician.rows[0].id, hashSessionToken(token), lifetimeSeconds],
     );
     await client.query('COMMIT');
@@ -120,16 +237,16 @@ router.post('/register', async (req, res, next) => {
     res.status(201).json({
       technicien: {
         ...technician.rows[0],
-        legacy_cache_owner: !hasTechnicians,
+        legacy_cache_owner: false,
       },
-      session_expires_at: session.rows && session.rows[0] && session.rows[0].expires_at,
+      session_expires_at: new Date(Date.now() + lifetimeSeconds * 1000).toISOString(),
     });
   } catch (error) {
     if (client && transactionStarted) {
       try {
         await client.query('ROLLBACK');
       } catch (rollbackError) {
-        console.error(`Échec d’annulation de la création du compte (${rollbackError.code || 'connexion'}).`);
+        console.error(`Échec d’annulation de la confirmation (${rollbackError.code || 'connexion'}).`);
       }
     }
     next(error);

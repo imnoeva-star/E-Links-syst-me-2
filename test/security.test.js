@@ -91,7 +91,9 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(html, /id="report-donut"/);
   assert.doesNotMatch(html, /Ravi de vous revoir/);
   assert.doesNotMatch(html, /id="show-registration"|Créer un compte/);
-  assert.match(html, /id="workshop-account-form"/);
+  assert.match(html, /id="workshop-request-form"/);
+  assert.match(html, /id="workshop-confirm-form"/);
+  assert.match(html, /id="workshop-request-list"/);
   assert.match(html, /id="login-form"/);
   assert.match(html, /id="remember-session"/);
   assert.match(html, /id="show-password-recovery"/);
@@ -203,7 +205,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(pageHtml, /rel="apple-touch-icon" href="\/icon-192\.png"/);
   const serviceWorker = await fetch(`${baseUrl}/service-worker.js`);
   const serviceWorkerText = await serviceWorker.text();
-  assert.match(serviceWorkerText, /atelier-express-v29/);
+  assert.match(serviceWorkerText, /atelier-express-v30/);
   assert.match(serviceWorkerText, /offline-store\.js/);
   assert.match(serviceWorkerText, /icon-512\.png/);
   assert.match(serviceWorkerText, /addEventListener\('push'/);
@@ -1067,32 +1069,89 @@ test('initial registration validates password and confirmation before database a
   assert.match((await response.json()).erreur, /6 à 12/);
 });
 
-test('public registration is disabled and workshop creation is administrator-only', async () => {
+test('public workshop request creates no account before approval', async () => {
   await startServer();
-  const publicResponse = await fetch(`${baseUrl}/api/auth/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      nom: 'Nova',
-      email: 'nova@example.com',
-      password: 'Aa1234',
-      confirmation: 'Aa1234',
-    }),
+  const originalConnect = db.pool.connect;
+  const originalQuery = db.query;
+  let requested = false;
+  db.query = async (sql) => {
+    if (sql.includes('UPDATE workshop_account_requests')) return { rows: [], rowCount: 0 };
+    if (sql.includes('COUNT(*) AS total')) return { rows: [{ total: '0' }], rowCount: 1 };
+    return { rows: [], rowCount: 0 };
+  };
+  db.pool.connect = async () => ({
+    query: async (sql, values = []) => {
+      if (sql.includes('SELECT id FROM techniciens WHERE email')) return { rows: [], rowCount: 0 };
+      if (sql.includes('SELECT id FROM workshop_account_requests')) return { rows: [], rowCount: 0 };
+      if (sql.includes('INSERT INTO workshop_account_requests')) requested = true;
+      return { rows: [], rowCount: 1 };
+    },
+    release: () => {},
   });
-  assert.equal(publicResponse.status, 403);
-  assert.match((await publicResponse.json()).erreur, /administrateur principal depuis les Paramètres/);
+  try {
+    const publicResponse = await fetch(`${baseUrl}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        nom: 'Nova',
+        email: 'nova@example.com',
+        password: 'Aa1234',
+        confirmation: 'Aa1234',
+      }),
+    });
+    assert.equal(publicResponse.status, 201);
+    assert.match((await publicResponse.json()).message, /envoyée à l’administrateur/);
+    assert.equal(requested, true);
 
-  const unauthenticated = await fetch(`${baseUrl}/api/workshops`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      nom: 'Nouvel atelier',
-      email: 'atelier@example.com',
-      password: 'Aa1234',
-      confirmation: 'Aa1234',
-    }),
+    const unauthenticated = await fetch(`${baseUrl}/api/workshop-requests`);
+    assert.equal(unauthenticated.status, 401);
+  } finally {
+    db.pool.connect = originalConnect;
+    db.query = originalQuery;
+  }
+});
+
+test('approved workshop code cannot confirm after expiry', async () => {
+  await startServer();
+  const originalConnect = db.pool.connect;
+  let createdAccount = false;
+  db.pool.connect = async () => ({
+    query: async (sql) => {
+      if (sql.includes('SELECT id, nom, email, password_hash, code_hash')) {
+        return {
+          rows: [{
+            id: '00000000-0000-4000-8000-000000000030',
+            nom: 'Nouvel atelier',
+            email: 'atelier@example.com',
+            password_hash: 'stored-hash',
+            code_hash: '0'.repeat(64),
+            code_expires_at: new Date(Date.now() - 60000).toISOString(),
+            code_attempts: 0,
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes('INSERT INTO techniciens')) createdAccount = true;
+      return { rows: [], rowCount: 1 };
+    },
+    release: () => {},
   });
-  assert.equal(unauthenticated.status, 401);
+  try {
+    const response = await fetch(`${baseUrl}/api/auth/workshop-request/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        request_id: '00000000-0000-4000-8000-000000000030',
+        email: 'atelier@example.com',
+        code: '123456',
+      }),
+    });
+    assert.equal(response.status, 410);
+    assert.match((await response.json()).erreur, /code a expiré/i);
+    assert.equal(createdAccount, false);
+  } finally {
+    db.pool.connect = originalConnect;
+  }
 });
 
 test('employee accounts cannot log in as independent workshop owners', async () => {

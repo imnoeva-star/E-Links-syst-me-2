@@ -43,6 +43,7 @@ app.get('/readyz', async (req, res, next) => {
         to_regclass('public.auth_login_attempts') IS NOT NULL AND
         to_regclass('public.push_subscriptions') IS NOT NULL AND
         to_regclass('public.parametres_atelier') IS NOT NULL AND
+        to_regclass('public.workshop_account_requests') IS NOT NULL AND
         EXISTS (
           SELECT 1 FROM pg_attribute
           WHERE attrelid = to_regclass('public.techniciens')
