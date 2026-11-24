@@ -118,6 +118,8 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(html, /id="device-expense-cdf"/);
   assert.match(html, /id="device-approval-clause"/);
   assert.match(html, /id="device-signature"/);
+  assert.match(html, /id="device-price-row"/);
+  assert.match(html, /id="device-payments-section"/);
   assert.ok(html.indexOf('id="device-approval"') > html.indexOf('id="payment-form"'));
   assert.match(html, /id="prix"[^>]*required/);
   assert.match(html, /Prix total convenu en USD \(obligatoire\)/);
@@ -136,6 +138,10 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(scriptText, /playWelcome\(technician\.nom\)/);
   assert.match(scriptText, /window\.addEventListener\('popstate'/);
   assert.match(scriptText, /function resetIntakeForm\(\)/);
+  assert.match(scriptText, /const isDelivered = device\.statut === 'LIVRE' \|\| Boolean\(device\.acte_valide\)/);
+  assert.match(scriptText, /device-archive-button'\)\.classList\.toggle\('hidden', state\.technician\?\.role !== 'ADMIN' \|\| isDelivered\)/);
+  assert.match(scriptText, /device-payments-section'\)\.classList\.toggle\('hidden', isDelivered\)/);
+  assert.match(scriptText, /expense-form'\)\.classList\.toggle\('hidden', isDelivered\)/);
   assert.match(scriptText, /\/api\/reports\/personal/);
   assert.match(scriptText, /getCoalescedEvents/);
   assert.match(scriptText, /quadraticCurveTo/);
@@ -187,7 +193,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(pageHtml, /rel="apple-touch-icon" href="\/icon-192\.png"/);
   const serviceWorker = await fetch(`${baseUrl}/service-worker.js`);
   const serviceWorkerText = await serviceWorker.text();
-  assert.match(serviceWorkerText, /atelier-express-v23/);
+  assert.match(serviceWorkerText, /atelier-express-v24/);
   assert.match(serviceWorkerText, /offline-store\.js/);
   assert.match(serviceWorkerText, /icon-512\.png/);
   assert.match(serviceWorkerText, /addEventListener\('push'/);

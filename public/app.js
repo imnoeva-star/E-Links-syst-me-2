@@ -2009,8 +2009,12 @@ async function openDevice(id, trigger = null) {
     const canManage = state.technician?.role === 'ADMIN' &&
       device.statut !== 'LIVRE' &&
       !device.acte_valide;
+    const isDelivered = device.statut === 'LIVRE' || Boolean(device.acte_valide);
     $('#device-edit-toggle').classList.toggle('hidden', !canManage);
-    $('#device-archive-button').classList.toggle('hidden', state.technician?.role !== 'ADMIN');
+    $('#device-archive-button').classList.toggle('hidden', state.technician?.role !== 'ADMIN' || isDelivered);
+    $('#device-price-row').classList.toggle('hidden', isDelivered);
+    $('#device-payments-section').classList.toggle('hidden', isDelivered);
+    $('#device-summary').classList.toggle('hidden', isDelivered);
     $('#device-edit-section').classList.add('hidden');
     $('#device-edit-message').textContent = '';
     $('#edit-client-name').value = device.client_nom || '';
@@ -2061,6 +2065,7 @@ async function openDevice(id, trigger = null) {
     if (hasSignature) signature.src = device.signature_data;
     else signature.removeAttribute('src');
     $('#payment-form').classList.toggle('hidden', device.statut === 'LIVRE');
+    $('#expense-form').classList.toggle('hidden', isDelivered);
     $('#payment-message').textContent = '';
     $('#payment-amount').value = '';
     $('#payment-currency').value = 'USD';
