@@ -1,4 +1,4 @@
-const CACHE_NAME = 'atelier-express-v24';
+const CACHE_NAME = 'atelier-express-v25';
 const APP_FILES = [
   '/',
   '/suivi',

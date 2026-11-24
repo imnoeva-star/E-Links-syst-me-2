@@ -2012,9 +2012,9 @@ async function openDevice(id, trigger = null) {
     const isDelivered = device.statut === 'LIVRE' || Boolean(device.acte_valide);
     $('#device-edit-toggle').classList.toggle('hidden', !canManage);
     $('#device-archive-button').classList.toggle('hidden', state.technician?.role !== 'ADMIN' || isDelivered);
-    $('#device-price-row').classList.toggle('hidden', isDelivered);
-    $('#device-payments-section').classList.toggle('hidden', isDelivered);
-    $('#device-summary').classList.toggle('hidden', isDelivered);
+    $('#device-price-row').classList.remove('hidden');
+    $('#device-payments-section').classList.remove('hidden');
+    $('#device-summary').classList.remove('hidden');
     $('#device-edit-section').classList.add('hidden');
     $('#device-edit-message').textContent = '';
     $('#edit-client-name').value = device.client_nom || '';
@@ -2048,6 +2048,9 @@ async function openDevice(id, trigger = null) {
       ? String(device.frais_cdf)
       : '';
     $('#expense-message').textContent = '';
+    $('#device-repair-history').classList.toggle('hidden', !isDelivered);
+    $('#device-history-expense-usd').textContent = formatMoney(device.frais_usd, 'USD');
+    $('#device-history-expense-cdf').textContent = formatMoney(device.frais_cdf, 'CDF');
     $('#device-qr-result').classList.add('hidden');
     $('#device-qr-message').textContent = '';
     $('#device-qr-button').disabled = false;

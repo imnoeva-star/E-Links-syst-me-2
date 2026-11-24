@@ -570,6 +570,21 @@
 
         <div id="device-summary" class="rounded-2xl bg-teal-50 p-4 text-sm font-semibold text-teal-900"></div>
 
+        <section id="device-repair-history" class="hidden rounded-2xl border border-slate-200 bg-slate-50 p-4 shadow-sm sm:p-5">
+          <h3 class="mb-3 font-black">Historique de la réparation</h3>
+          <dl class="grid grid-cols-2 gap-3 text-sm">
+            <div>
+              <dt class="text-slate-500">Pièces / frais USD</dt>
+              <dd id="device-history-expense-usd" class="mt-1 font-black"></dd>
+            </div>
+            <div>
+              <dt class="text-slate-500">Pièces / frais FC</dt>
+              <dd id="device-history-expense-cdf" class="mt-1 font-black"></dd>
+            </div>
+          </dl>
+          <p class="mt-3 text-xs text-slate-500">Informations conservées en lecture seule.</p>
+        </section>
+
         <section class="rounded-2xl bg-white p-4 shadow-sm sm:p-5">
           <h3 class="font-black">Suivi client par QR code</h3>
           <p class="mt-1 text-sm text-slate-500">Le client pourra voir le statut et activer une alerte quand l’appareil sera prêt.</p>
