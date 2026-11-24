@@ -36,9 +36,10 @@ test('offline storage opens a separate database for each non-legacy account', as
   const otherAccountId = '00000000-0000-4000-8000-000000000002';
 
   await store.open();
-  store.setAccount(otherAccountId, false);
+  assert.equal(store.setAccount(otherAccountId, false), false);
   await store.open();
-  store.setAccount(primaryAccountId, true);
+  assert.equal(await store.replaceSnapshot({ clients: [] }, primaryAccountId), false);
+  assert.equal(store.setAccount(primaryAccountId, true), true);
   await store.open();
 
   assert.deepEqual(openedDatabases, [

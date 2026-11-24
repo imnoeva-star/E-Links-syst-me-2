@@ -6,6 +6,7 @@
   const STORES = ['meta', 'clients', 'appareils', 'paiements', 'operations'];
   const accountIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   let databaseName = DATABASE_NAME;
+  let activeAccountId = null;
   let databasePromise;
   let activeDatabase;
   let operationSequence = 0;
@@ -13,6 +14,7 @@
   try {
     const storedAccountId = window.localStorage.getItem(ACCOUNT_STORAGE_KEY);
     if (accountIdPattern.test(storedAccountId || '')) {
+      activeAccountId = storedAccountId;
       databaseName = window.localStorage.getItem(LEGACY_OWNER_STORAGE_KEY) === storedAccountId
         ? DATABASE_NAME
         : `${DATABASE_NAME}-${storedAccountId}`;
@@ -25,6 +27,7 @@
     if (!accountIdPattern.test(accountId || '') || typeof legacyCacheOwner !== 'boolean') {
       throw new Error('Le compte connecté ne peut pas être utilisé pour le stockage hors ligne.');
     }
+    const switchedAccount = activeAccountId !== null && activeAccountId !== accountId;
     const nextDatabaseName = legacyCacheOwner
       ? DATABASE_NAME
       : `${DATABASE_NAME}-${accountId}`;
@@ -34,12 +37,14 @@
       databasePromise = null;
     }
     databaseName = nextDatabaseName;
+    activeAccountId = accountId;
     window.localStorage.setItem(ACCOUNT_STORAGE_KEY, accountId);
     if (legacyCacheOwner) {
       window.localStorage.setItem(LEGACY_OWNER_STORAGE_KEY, accountId);
     } else {
       window.localStorage.removeItem(LEGACY_OWNER_STORAGE_KEY);
     }
+    return switchedAccount;
   }
 
   function newId() {
@@ -118,12 +123,14 @@
     });
   }
 
-  async function replaceSnapshot(snapshot) {
+  async function replaceSnapshot(snapshot, expectedAccountId) {
+    if (expectedAccountId && expectedAccountId !== activeAccountId) return false;
     const [existingClients, existingDevices, existingPayments] = await Promise.all([
       all('clients'),
       all('appareils'),
       all('paiements'),
     ]);
+    if (expectedAccountId && expectedAccountId !== activeAccountId) return false;
     const database = await openDatabase();
     return new Promise((resolve, reject) => {
       const transaction = database.transaction(['meta', 'clients', 'appareils', 'paiements'], 'readwrite');
@@ -153,6 +160,7 @@
       transaction.onerror = () => reject(transaction.error);
       transaction.onabort = () => reject(transaction.error || new Error('Échec d’enregistrement des données hors ligne.'));
     });
+    return true;
   }
 
   async function saveSession(technician, expiresAt) {
@@ -237,6 +245,7 @@
     setAccount,
     getQueue,
     getSession,
+    isCurrentAccount: (accountId) => accountId === activeAccountId,
     open: openDatabase,
     remove,
     replaceDeviceVersion,

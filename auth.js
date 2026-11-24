@@ -81,7 +81,8 @@ async function requireTechnician(req, res, next) {
               )) AS legacy_cache_owner
        FROM sessions_techniciens s
        JOIN techniciens t ON t.id = s.technicien_id
-       WHERE s.token_hash = $1 AND s.expires_at > NOW() AND t.actif = TRUE`,
+       WHERE s.token_hash = $1 AND s.expires_at > NOW() AND t.actif = TRUE
+         AND t.role = 'ADMIN' AND t.id = t.account_id`,
       [hashSessionToken(token)],
     );
     if (!result.rowCount) return res.status(401).json({ erreur: 'Session expirée. Reconnectez-vous.' });

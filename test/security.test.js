@@ -17,7 +17,7 @@ const {
 let server;
 let baseUrl;
 const AUTHENTICATED_TECHNICIAN = {
-  id: '00000000-0000-4000-8000-000000000001',
+  id: '00000000-0000-4000-8000-000000000010',
   account_id: '00000000-0000-4000-8000-000000000010',
   nom: 'Test',
   email: 'test@example.invalid',
@@ -96,7 +96,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(html, /id="show-password-recovery"/);
   assert.match(html, /id="password-recovery-form"/);
   assert.match(html, /id="password-reset-form"/);
-  assert.match(html, /id="technician-form"/);
+  assert.doesNotMatch(html, /Équipe et comptes|id="page-team"|id="technician-form"/);
   assert.match(html, /maxlength="12" required/);
   assert.match(html, /href="\/styles\.css"/);
   assert.match(html, /id="waiting-next"/);
@@ -187,7 +187,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(pageHtml, /rel="apple-touch-icon" href="\/icon-192\.png"/);
   const serviceWorker = await fetch(`${baseUrl}/service-worker.js`);
   const serviceWorkerText = await serviceWorker.text();
-  assert.match(serviceWorkerText, /atelier-express-v22/);
+  assert.match(serviceWorkerText, /atelier-express-v23/);
   assert.match(serviceWorkerText, /offline-store\.js/);
   assert.match(serviceWorkerText, /icon-512\.png/);
   assert.match(serviceWorkerText, /addEventListener\('push'/);
@@ -243,6 +243,7 @@ test('authenticated business reads and mutations are constrained to the technici
 
   db.query = async (sql, values = []) => {
     if (sql.includes('sessions_techniciens')) {
+      assert.match(sql, /t\.role = 'ADMIN' AND t\.id = t\.account_id/);
       return { rows: [{ ...AUTHENTICATED_TECHNICIAN }], rowCount: 1 };
     }
     queries.push({ sql, values });
@@ -300,6 +301,7 @@ test('authenticated business reads and mutations are constrained to the technici
     });
     assert.equal((await request('/api/dashboard')).status, 200);
     assert.equal((await request('/api/offline/snapshot')).status, 200);
+    assert.equal((await request('/api/techniciens')).status, 404);
 
     const patch = await request(`/api/appareils/${deviceId}`, {
       method: 'PATCH',
@@ -1049,7 +1051,7 @@ test('initial registration validates password and confirmation before database a
   assert.match((await response.json()).erreur, /6 à 12/);
 });
 
-test('technician registration requires the configured invitation code', async () => {
+test('independent workshop registration requires the configured invitation code', async () => {
   await startServer();
   const originalConnect = db.pool.connect;
   const originalInviteCode = process.env.TECHNICIAN_INVITE_CODE;
@@ -1154,6 +1156,31 @@ test('registration creates a private administrator workspace', async () => {
   }
 });
 
+test('employee accounts cannot log in as independent workshop owners', async () => {
+  await startServer();
+  const originalQuery = db.query;
+  let loginQuery;
+  db.query = async (sql) => {
+    if (sql.includes('SELECT attempts')) return { rows: [], rowCount: 0 };
+    if (sql.includes('SELECT t.id, t.nom, t.email, t.password_hash')) {
+      loginQuery = sql;
+      return { rows: [], rowCount: 0 };
+    }
+    return { rows: [], rowCount: 1 };
+  };
+  try {
+    const response = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'employee@example.com', password: 'Aa1234' }),
+    });
+    assert.equal(response.status, 401);
+    assert.match(loginQuery, /t\.role = 'ADMIN' AND t\.id = t\.account_id/);
+  } finally {
+    db.query = originalQuery;
+  }
+});
+
 test('login stores the 30-day expiration when remember is selected', async () => {
   await startServer();
   const originalQuery = db.query;
@@ -1164,7 +1191,7 @@ test('login stores the 30-day expiration when remember is selected', async () =>
     if (sql.includes('SELECT t.id, t.nom, t.email, t.password_hash')) {
       return {
         rows: [{
-          id: '00000000-0000-4000-8000-000000000001',
+          id: AUTHENTICATED_TECHNICIAN.account_id,
           nom: 'Nova',
           email: 'nova@example.com',
           password_hash: passwordHash,

@@ -3,7 +3,7 @@ const QRCode = require('qrcode');
 const db = require('../db');
 const pushNotifications = require('../push-notifications');
 const auth = require('./auth');
-const { hashPassword, requireTechnician } = require('../auth');
+const { requireTechnician } = require('../auth');
 
 const router = express.Router();
 const STATUTS = new Set(['DEPOT', 'EN_COURS', 'PRET', 'LIVRE']);
@@ -98,7 +98,7 @@ function paymentMatches(payment, appareilId, montant, devise) {
 
 function requireAdmin(req, res, next) {
   if (req.technicien.role !== 'ADMIN') {
-    return res.status(403).json({ erreur: 'Réservé à l’administrateur de l’atelier.' });
+    return res.status(403).json({ erreur: 'Réservé au propriétaire de l’atelier.' });
   }
   next();
 }
@@ -191,86 +191,6 @@ router.delete('/public/appareils/:id/notifications', async (req, res, next) => {
 });
 
 router.use(requireTechnician);
-
-router.get('/techniciens', requireAdmin, async (req, res, next) => {
-  try {
-    const result = await db.query(
-      `SELECT id, nom, email, role, actif, created_at
-       FROM techniciens
-       WHERE account_id = $1
-       ORDER BY CASE role WHEN 'ADMIN' THEN 0 ELSE 1 END, nom`,
-      [req.technicien.account_id],
-    );
-    res.json(result.rows);
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.post('/techniciens', requireAdmin, async (req, res, next) => {
-  const { nom, email, password, confirmation } = req.body || {};
-  if (
-    typeof nom !== 'string' ||
-    nom.trim().length < 1 ||
-    nom.trim().length > 80 ||
-    typeof email !== 'string' ||
-    email.length > 254 ||
-    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) ||
-    typeof password !== 'string' ||
-    password.length < 6 ||
-    password.length > 12 ||
-    password !== confirmation
-  ) {
-    return res.status(400).json({
-      erreur: 'Vérifiez le nom, l’e-mail et le mot de passe (6 à 12 caractères).',
-    });
-  }
-  try {
-    const passwordHash = await hashPassword(password);
-    const result = await db.query(
-      `INSERT INTO techniciens (account_id, nom, email, password_hash, role)
-       VALUES ($1, $2, LOWER($3), $4, 'TECHNICIEN')
-       RETURNING id, nom, email, role, actif, created_at`,
-      [req.technicien.account_id, nom.trim(), email.trim(), passwordHash],
-    );
-    res.status(201).json(result.rows[0]);
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.patch('/techniciens/:id', requireAdmin, async (req, res, next) => {
-  const { actif } = req.body || {};
-  if (typeof actif !== 'boolean') {
-    return res.status(400).json({ erreur: 'Le statut du compte doit être un booléen.' });
-  }
-  if (req.params.id === req.technicien.id && !actif) {
-    return res.status(409).json({ erreur: 'Un administrateur ne peut pas désactiver son propre compte.' });
-  }
-  try {
-    const result = await db.query(
-      `UPDATE techniciens
-       SET actif = $2
-       WHERE id = $1 AND account_id = $3
-         AND (
-           $2 = TRUE OR role <> 'ADMIN' OR
-           (SELECT COUNT(*) FROM techniciens
-            WHERE account_id = $3 AND role = 'ADMIN' AND actif = TRUE) > 1
-         )
-       RETURNING id, nom, email, role, actif, created_at`,
-      [req.params.id, actif, req.technicien.account_id],
-    );
-    if (result.rowCount) return res.json(result.rows[0]);
-    const existing = await db.query(
-      'SELECT id FROM techniciens WHERE id = $1 AND account_id = $2',
-      [req.params.id, req.technicien.account_id],
-    );
-    if (!existing.rowCount) return res.status(404).json({ erreur: 'Technicien introuvable.' });
-    return res.status(409).json({ erreur: 'Le dernier administrateur actif ne peut pas être désactivé.' });
-  } catch (error) {
-    next(error);
-  }
-});
 
 router.get('/settings', requireAdmin, async (req, res, next) => {
   try {

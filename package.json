@@ -10,8 +10,7 @@
     "build": "tailwindcss -i ./public/styles.src.css -o ./public/styles.css --minify",
     "pretest": "npm run build",
     "test": "node --test",
-    "db:migrate": "node scripts/migrate.js",
-    "create-user": "node scripts/create-user.js"
+    "db:migrate": "node scripts/migrate.js"
   },
   "engines": {
     "node": ">=20"

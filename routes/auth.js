@@ -186,7 +186,8 @@ router.post('/login', async (req, res, next) => {
                 LIMIT 1
               )) AS legacy_cache_owner
        FROM techniciens AS t
-       WHERE email = LOWER($1) AND actif = TRUE`,
+       WHERE email = LOWER($1) AND actif = TRUE
+         AND t.role = 'ADMIN' AND t.id = t.account_id`,
       [emailAddress],
     );
     const technician = result.rows[0];
@@ -285,7 +286,9 @@ router.post('/password-reset/request', async (req, res, next) => {
     );
 
     const result = await db.query(
-      'SELECT id, email FROM techniciens WHERE email = LOWER($1) AND actif = TRUE',
+      `SELECT id, email FROM techniciens
+       WHERE email = LOWER($1) AND actif = TRUE
+         AND role = 'ADMIN' AND id = account_id`,
       [emailAddress],
     );
     const technician = result.rows[0];
@@ -342,6 +345,7 @@ router.post('/password-reset/confirm', async (req, res, next) => {
        FROM password_reset_tokens r
        JOIN techniciens t ON t.id = r.technicien_id
        WHERE r.token_hash = $1 AND r.expires_at > NOW() AND t.actif = TRUE
+         AND t.role = 'ADMIN' AND t.id = t.account_id
        FOR UPDATE OF r`,
       [hashSessionToken(token)],
     );
@@ -392,7 +396,8 @@ router.get('/session', async (req, res, next) => {
               s.expires_at
        FROM sessions_techniciens s
        JOIN techniciens t ON t.id = s.technicien_id
-       WHERE s.token_hash = $1 AND s.expires_at > NOW() AND t.actif = TRUE`,
+       WHERE s.token_hash = $1 AND s.expires_at > NOW() AND t.actif = TRUE
+         AND t.role = 'ADMIN' AND t.id = t.account_id`,
       [hashSessionToken(token)],
     );
     if (!result.rowCount) {

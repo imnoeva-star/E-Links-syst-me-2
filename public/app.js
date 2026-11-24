@@ -62,12 +62,11 @@ const pageTitles = {
   waiting: 'Salle d’attente',
   archive: 'Archives',
   settings: 'Paramètres',
-  team: 'Équipe et comptes',
 };
 
 function showPage(name, updateUrl = true, loadData = true) {
   const requestedPage = Object.prototype.hasOwnProperty.call(pageTitles, name) ? name : 'dashboard';
-  const page = ['settings', 'team'].includes(requestedPage) && state.technician?.role !== 'ADMIN'
+  const page = requestedPage === 'settings' && state.technician?.role !== 'ADMIN'
     ? 'dashboard'
     : requestedPage;
   document.querySelectorAll('.page-view').forEach((view) => {
@@ -82,12 +81,6 @@ function showPage(name, updateUrl = true, loadData = true) {
     button.classList.toggle('text-teal-800', active);
   });
   closeMenu(false);
-  if (page === 'team' && state.technician && state.technician.role === 'ADMIN') {
-    loadTechnicians().catch((error) => {
-      $('#technician-form-message').textContent = error.message;
-      $('#technician-form-message').className = 'text-sm text-red-700';
-    });
-  }
   if (updateUrl && window.location.hash !== `#${page}`) {
     window.history.pushState(null, '', `#${page}`);
   } else if (!updateUrl && window.location.hash && window.location.hash !== `#${page}`) {
@@ -487,7 +480,7 @@ async function offlineRequest(url, options = {}) {
     throw new Error('Cette fonction nécessite une connexion Internet.');
   }
 
-  if (!['POST', 'PATCH', 'DELETE'].includes(method) || pathname.includes('/techniciens')) {
+  if (!['POST', 'PATCH', 'DELETE'].includes(method)) {
     throw new Error('Cette fonction nécessite une connexion Internet.');
   }
   const createMatch = pathname === '/api/appareils' && method === 'POST';
@@ -686,21 +679,29 @@ async function offlineRequest(url, options = {}) {
   return updatedDevice;
 }
 
-async function cacheOnlineResponse(url, method, data, options = {}) {
+async function cacheOnlineResponse(url, method, data, options = {}, accountId) {
+  const isCurrentAccount = () =>
+    accountId &&
+    state.technician?.account_id === accountId &&
+    OfflineStore.isCurrentAccount(accountId);
+  if (!isCurrentAccount()) return;
   const parsedUrl = new URL(url, window.location.origin);
   if (method === 'GET' && parsedUrl.pathname === '/api/offline/snapshot') {
-    await OfflineStore.replaceSnapshot(data);
+    await OfflineStore.replaceSnapshot(data, accountId);
     return;
   }
   if (method === 'GET' && parsedUrl.pathname === '/api/appareils') {
-    await Promise.all((data.appareils || []).map(async (device) => {
+    for (const device of data.appareils || []) {
+      if (!isCurrentAccount()) return;
       const cached = await OfflineStore.get('appareils', device.id);
+      if (!isCurrentAccount()) return;
       if (!cached || !cached.pending_sync) await OfflineStore.write('appareils', device);
-    }));
+    }
     return;
   }
   if (method === 'GET' && /^\/api\/appareils\/[0-9a-f-]+$/i.test(parsedUrl.pathname)) {
     const cached = await OfflineStore.get('appareils', data.id);
+    if (!isCurrentAccount()) return;
     if (!cached || !cached.pending_sync) await OfflineStore.write('appareils', data);
     return;
   }
@@ -708,6 +709,7 @@ async function cacheOnlineResponse(url, method, data, options = {}) {
   if (method === 'POST' && parsedUrl.pathname === '/api/appareils') {
     const telephone = String(body.telephone || '').trim().replace(/[\s().-]/g, '');
     const clients = await OfflineStore.all('clients');
+    if (!isCurrentAccount()) return;
     let client = clients.find((item) => item.telephone === telephone);
     if (!client) {
       client = { id: data.client_id, nom: body.nom || '', telephone };
@@ -715,7 +717,9 @@ async function cacheOnlineResponse(url, method, data, options = {}) {
       client = { ...client, nom: body.nom };
     }
     await OfflineStore.write('clients', client);
+    if (!isCurrentAccount()) return;
     const existing = await OfflineStore.get('appareils', data.id);
+    if (!isCurrentAccount()) return;
     await OfflineStore.write('appareils', {
       ...existing,
       ...data,
@@ -729,11 +733,14 @@ async function cacheOnlineResponse(url, method, data, options = {}) {
   const paymentMatch = parsedUrl.pathname.match(/^\/api\/appareils\/([0-9a-f-]+)\/paiements$/i);
   if (paymentMatch && method === 'POST' && data) {
     const device = await OfflineStore.get('appareils', paymentMatch[1]);
+    if (!isCurrentAccount()) return;
     if (device) {
       const payments = await OfflineStore.all('paiements');
+      if (!isCurrentAccount()) return;
       const alreadyStored = payments.some((payment) => payment.request_key === data.request_key);
       if (!alreadyStored) {
         await OfflineStore.write('paiements', { ...data, pending_sync: false });
+        if (!isCurrentAccount()) return;
         const updatedDevice = { ...device, pending_sync: false };
         if (data.devise === 'USD') updatedDevice.paiements_usd = Number(device.paiements_usd || 0) + Number(data.montant);
         else updatedDevice.paiements_cdf = Number(device.paiements_cdf || 0) + Number(data.montant);
@@ -745,6 +752,7 @@ async function cacheOnlineResponse(url, method, data, options = {}) {
   const approvalMatch = parsedUrl.pathname.match(/^\/api\/appareils\/([0-9a-f-]+)\/approbation$/i);
   if (approvalMatch && method === 'POST' && data) {
     const device = await OfflineStore.get('appareils', approvalMatch[1]);
+    if (!isCurrentAccount()) return;
     if (device) {
       await OfflineStore.write('appareils', {
         ...device,
@@ -762,11 +770,13 @@ async function cacheOnlineResponse(url, method, data, options = {}) {
   const deviceMatch = parsedUrl.pathname.match(/^\/api\/appareils\/([0-9a-f-]+)$/i);
   if (deviceMatch && method === 'PATCH' && data) {
     const device = await OfflineStore.get('appareils', deviceMatch[1]);
+    if (!isCurrentAccount()) return;
     if (device) await OfflineStore.write('appareils', { ...device, ...data, pending_sync: false });
     return;
   }
   if (deviceMatch && method === 'DELETE') {
     const device = await OfflineStore.get('appareils', deviceMatch[1]);
+    if (!isCurrentAccount()) return;
     if (device) {
       await OfflineStore.write('appareils', {
         ...device,
@@ -816,13 +826,25 @@ async function updateOfflineStatus(message = '') {
 async function request(url, options = {}) {
   const method = (options.method || 'GET').toUpperCase();
   const isSessionCheck = url === '/api/auth/session';
+  const accountId = state.technician?.account_id || null;
+  const isCurrentRequest = () => !accountId || state.technician?.account_id === accountId;
+  const staleRequestError = () => {
+    const error = new Error('La session a changé pendant le chargement.');
+    error.stale = true;
+    return error;
+  };
+  const readOffline = async () => {
+    const data = await offlineRequest(url, options);
+    if (!isCurrentRequest()) throw staleRequestError();
+    return data;
+  };
   if (state.isOffline || !navigator.onLine) {
     if (isSessionCheck) {
       const error = new Error('Serveur inaccessible. Vérifiez la connexion puis réessayez.');
       error.offline = true;
       throw error;
     }
-    return offlineRequest(url, options);
+    return readOffline();
   }
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 20000);
@@ -835,6 +857,7 @@ async function request(url, options = {}) {
       headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     });
   } catch (error) {
+    if (!isCurrentRequest()) throw staleRequestError();
     if (error.name === 'AbortError') {
       setOfflineMode(true);
       if (isSessionCheck) {
@@ -842,7 +865,7 @@ async function request(url, options = {}) {
         timeoutError.offline = true;
         throw timeoutError;
       }
-      return offlineRequest(url, options);
+      return readOffline();
     }
     setOfflineMode(true);
     if (isSessionCheck) {
@@ -850,12 +873,14 @@ async function request(url, options = {}) {
       networkError.offline = true;
       throw networkError;
     }
-    return offlineRequest(url, options);
+    return readOffline();
   } finally {
     window.clearTimeout(timeout);
   }
+  if (!isCurrentRequest()) throw staleRequestError();
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
+    if (!isCurrentRequest()) throw staleRequestError();
     if (response.status === 503 && url.startsWith('/api/')) {
       setOfflineMode(true);
       if (isSessionCheck) {
@@ -863,7 +888,7 @@ async function request(url, options = {}) {
         unavailableError.offline = true;
         throw unavailableError;
       }
-      return offlineRequest(url, options);
+      return readOffline();
     }
     if (
       response.status === 401 &&
@@ -873,6 +898,7 @@ async function request(url, options = {}) {
       await OfflineStore.clearSession().catch((storageError) =>
         console.error('Échec de suppression de la session hors ligne.', storageError),
       );
+      if (!isCurrentRequest()) throw staleRequestError();
       showLogin('Votre session a expiré. Reconnectez-vous.');
     }
     const error = new Error(body.erreur || 'Une erreur est survenue.');
@@ -881,15 +907,20 @@ async function request(url, options = {}) {
   }
   setOfflineMode(false);
   const data = response.status === 204 ? null : await response.json();
-  try {
-    await cacheOnlineResponse(url, method, data, options);
-  } catch (error) {
-    console.error('Échec de mise à jour du cache hors ligne.', error);
+  if (!isCurrentRequest()) throw staleRequestError();
+  if (accountId && isCurrentRequest()) {
+    try {
+      await cacheOnlineResponse(url, method, data, options, accountId);
+    } catch (error) {
+      console.error('Échec de mise à jour du cache hors ligne.', error);
+    }
   }
   return data;
 }
 
 async function refreshOfflineSnapshot() {
+  const accountId = state.technician?.account_id;
+  if (!accountId) return;
   try {
     const response = await fetch('/api/offline/snapshot', {
       credentials: 'same-origin',
@@ -902,7 +933,12 @@ async function refreshOfflineSnapshot() {
       throw error;
     }
     const snapshot = await response.json();
-    await OfflineStore.replaceSnapshot(snapshot);
+    if (
+      state.technician?.account_id !== accountId ||
+      !OfflineStore.isCurrentAccount(accountId)
+    ) return;
+    await OfflineStore.replaceSnapshot(snapshot, accountId);
+    if (state.technician?.account_id !== accountId) return;
     state.lastSnapshotAt = Date.now();
     state.offlineStorageError = null;
     await updateOfflineStatus();
@@ -1147,7 +1183,7 @@ async function showApp(technician, { offline = false, expiresAt } = {}) {
   ) {
     throw new Error('Reconnectez-vous une fois en ligne pour activer le stockage privé de ce compte.');
   }
-  OfflineStore.setAccount(technician.account_id, technician.legacy_cache_owner);
+  const switchedAccount = OfflineStore.setAccount(technician.account_id, technician.legacy_cache_owner);
   state.technician = technician;
   if (!offline) {
     try {
@@ -1158,11 +1194,14 @@ async function showApp(technician, { offline = false, expiresAt } = {}) {
       state.offlineStorageError = error.message;
     }
   }
+  if (switchedAccount) {
+    window.location.reload();
+    return;
+  }
   setOfflineMode(offline);
   $('#login-screen').classList.add('hidden');
   $('#app-shell').classList.remove('hidden');
   $('#menu-technician-name').textContent = technician.nom;
-  $('#team-menu-link').classList.toggle('hidden', technician.role !== 'ADMIN');
   $('#settings-menu-link').classList.toggle('hidden', technician.role !== 'ADMIN');
   showPage(window.location.hash.slice(1) || 'dashboard', false, false);
   refresh();
@@ -1340,8 +1379,8 @@ async function loadRegistrationSetup() {
       ? 'Créer le premier compte'
       : 'Créer un atelier indépendant';
     $('#registration-description').textContent = setup.isFirstAccount
-      ? 'Ce compte administrateur pourra ensuite gérer les accès de l’équipe.'
-      : 'Chaque inscription crée un espace privé, séparé des autres ateliers. Pour ajouter un employé, utilisez « Équipe et comptes ».';
+      ? 'Votre compte personnel sera le seul accès à cet atelier.'
+      : 'Chaque inscription crée un atelier privé avec ses propres dossiers et bilans.';
     $('#setup-code-label').textContent = setup.isFirstAccount
       ? 'Code de première configuration'
       : 'Code d’invitation';
@@ -1358,98 +1397,6 @@ async function loadRegistrationSetup() {
     $('#login-message').className = 'mt-3 min-h-5 text-sm text-red-700';
   }
 }
-
-function renderTechnicians(technicians) {
-  const list = $('#technician-list');
-  list.replaceChildren();
-  if (!technicians.length) {
-    const empty = document.createElement('li');
-    empty.className = 'text-sm text-slate-400';
-    empty.textContent = 'Aucun compte.';
-    list.append(empty);
-    return;
-  }
-  technicians.forEach((technician) => {
-    const item = document.createElement('li');
-    item.className = 'flex items-center justify-between gap-3 rounded-xl border border-slate-100 p-3';
-    const details = document.createElement('div');
-    details.className = 'min-w-0';
-    const name = document.createElement('p');
-    name.className = 'truncate font-semibold';
-    name.textContent = technician.nom;
-    const email = document.createElement('p');
-    email.className = 'truncate text-xs text-slate-500';
-    email.textContent = `${technician.email} · ${technician.role === 'ADMIN' ? 'Administrateur' : 'Technicien'}`;
-    const status = document.createElement('p');
-    status.className = `text-xs ${technician.actif ? 'text-teal-700' : 'text-red-700'}`;
-    status.textContent = technician.actif ? 'Actif' : 'Désactivé';
-    details.append(name, email, status);
-    item.append(details);
-    if (technician.id !== state.technician.id) {
-      const toggle = document.createElement('button');
-      toggle.type = 'button';
-      toggle.className = 'shrink-0 rounded-lg bg-slate-100 px-3 py-2 text-xs font-semibold';
-      toggle.textContent = technician.actif ? 'Désactiver' : 'Réactiver';
-      toggle.addEventListener('click', async () => {
-        toggle.disabled = true;
-        try {
-          await request(`/api/techniciens/${technician.id}`, {
-            method: 'PATCH',
-            body: JSON.stringify({ actif: !technician.actif }),
-          });
-          await loadTechnicians();
-        } catch (error) {
-          alert(error.message);
-          toggle.disabled = false;
-        }
-      });
-      item.append(toggle);
-    }
-    list.append(item);
-  });
-}
-
-async function loadTechnicians() {
-  renderTechnicians(await request('/api/techniciens'));
-}
-
-$('#technician-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const button = form.querySelector('button[type="submit"]');
-  const message = $('#technician-form-message');
-  const password = $('#technician-password-input').value;
-  const confirmation = $('#technician-password-confirmation').value;
-  if (password !== confirmation) {
-    message.textContent = 'Les mots de passe ne correspondent pas.';
-    message.className = 'text-sm text-red-700';
-    return;
-  }
-  button.disabled = true;
-  button.textContent = 'Création…';
-  message.textContent = '';
-  try {
-    await request('/api/techniciens', {
-      method: 'POST',
-      body: JSON.stringify({
-        nom: $('#technician-name-input').value.trim(),
-        email: $('#technician-email-input').value.trim(),
-        password,
-        confirmation,
-      }),
-    });
-    form.reset();
-    message.textContent = 'Compte technicien créé.';
-    message.className = 'text-sm text-teal-700';
-    await loadTechnicians();
-  } catch (error) {
-    message.textContent = error.message;
-    message.className = 'text-sm text-red-700';
-  } finally {
-    button.disabled = false;
-    button.textContent = 'Créer le compte';
-  }
-});
 
 $('#logout').addEventListener('click', async () => {
   try {
@@ -2263,6 +2210,7 @@ async function refresh() {
 }
 
 function showConnectionError(error) {
+  if (error.stale) return;
   console.error(error);
   $('#connection-message').textContent = error.message || 'Impossible de charger les données. Réessayez.';
   $('#connection-message').classList.remove('hidden');

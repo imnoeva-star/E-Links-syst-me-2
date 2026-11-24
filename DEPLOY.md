@@ -4,7 +4,7 @@
 
 1. Crée une branche de test Neon pour vérifier la migration sans toucher aux données de production.
 2. Dans un terminal avec les variables de cette branche, configure `DATABASE_URL` avec l’URL pooled et `DATABASE_URL_UNPOOLED` avec l’URL directe (sans `-pooler`).
-3. Lance `npm run db:migrate -- nom-de-migration.sql` en nommant uniquement les migrations non encore appliquées, puis vérifie `/readyz` et crée un compte avec `npm run create-user`.
+3. Lance `npm run db:migrate -- nom-de-migration.sql` en nommant uniquement les migrations non encore appliquées, puis vérifie `/readyz` et crée un compte depuis l’écran d’inscription.
 4. Quand cette vérification est satisfaisante, répète la migration et la création de compte sur la branche de production. Les migrations sont versionnées dans `migrations/` et ne sont pas exécutées automatiquement par Render.
 
 Le script lit `.env` en local. Il peut exécuter toutes les migrations triées par nom ou seulement les fichiers nommés sur l’URL directe; il refuse toute URL contenant `-pooler`. Ne déploie pas sans avoir d’abord appliqué et vérifié les migrations sur une branche de test.
@@ -12,9 +12,7 @@ Le script lit `.env` en local. Il peut exécuter toutes les migrations triées p
 ## Créer les comptes et ateliers
 Chaque inscription depuis « Créer un compte » crée un atelier privé avec son propre administrateur et ses propres données. En local, l’inscription initiale est disponible dès que la base ne contient aucun technicien.
 
-En production, configure d’abord `INITIAL_SETUP_CODE` (secret d’au moins 16 caractères) dans Render, puis saisis-le une seule fois dans le formulaire d’inscription. Les inscriptions suivantes demandent `TECHNICIAN_INVITE_CODE` (secret d’au moins 16 caractères) et créent aussi un nouvel atelier indépendant. Pour partager les données d’un atelier avec un employé, son administrateur doit créer son accès dans « Équipe et comptes » ; ne lui donne pas le code d’inscription indépendant.
-
-La commande `npm run create-user` crée un employé dans le premier atelier. Les mots de passe et leurs confirmations sont saisis sans affichage et doivent contenir entre 6 et 12 caractères.
+En production, configure `INITIAL_SETUP_CODE` (secret d’au moins 16 caractères) dans Render pour la première inscription. Chaque inscription ultérieure demande `TECHNICIAN_INVITE_CODE` (secret d’au moins 16 caractères) et crée un atelier indépendant avec un seul compte propriétaire-technicien. Chaque propriétaire se connecte avec son adresse e-mail et son mot de passe; ses dossiers, paiements et bilans restent séparés des autres ateliers. Il n’existe pas de comptes d’équipe.
 
 Pour désactiver un compte, connecte-toi à PostgreSQL et passe `techniciens.actif` à `FALSE` pour l’adresse concernée ; ses sessions cessent alors d’être acceptées.
 
