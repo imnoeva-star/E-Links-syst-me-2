@@ -38,22 +38,12 @@ function setupCodeMatches(provided, expected) {
 
 router.get('/setup', async (req, res, next) => {
   try {
-    const result = await db.query('SELECT EXISTS (SELECT 1 FROM techniciens) AS has_technicians');
-    const setupCode = process.env.INITIAL_SETUP_CODE;
-    const inviteCode = process.env.TECHNICIAN_INVITE_CODE;
-    const hasTechnicians = result.rows[0].has_technicians;
-    const code = hasTechnicians ? inviteCode : setupCode;
-    const codeInvalidForEnvironment =
-      process.env.NODE_ENV === 'production' && (!code || code.length < 16);
-    const registrationAvailable = hasTechnicians
-      ? Boolean(inviteCode) && (process.env.NODE_ENV !== 'production' || inviteCode.length >= 16)
-      : !codeInvalidForEnvironment;
     res.set('Cache-Control', 'no-store');
     res.json({
-      available: registrationAvailable,
-      codeRequired: hasTechnicians || process.env.NODE_ENV === 'production',
-      isFirstAccount: !hasTechnicians,
-      configurationRequired: !registrationAvailable,
+      available: false,
+      codeRequired: false,
+      isFirstAccount: false,
+      configurationRequired: true,
       passwordRecoveryAvailable: passwordResetEmailConfigured(),
     });
   } catch (error) {
@@ -68,6 +58,9 @@ router.post('/register', async (req, res, next) => {
       erreur: 'Vérifiez le nom, l’e-mail et le mot de passe (6 à 12 caractères).',
     });
   }
+  return res.status(403).json({
+    erreur: 'La création d’un atelier est réservée à l’administrateur principal depuis les Paramètres.',
+  });
 
   let client;
   let transactionStarted = false;

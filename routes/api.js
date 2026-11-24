@@ -1,9 +1,10 @@
 const express = require('express');
+const crypto = require('node:crypto');
 const QRCode = require('qrcode');
 const db = require('../db');
 const pushNotifications = require('../push-notifications');
 const auth = require('./auth');
-const { requireTechnician } = require('../auth');
+const { hashPassword, requireTechnician } = require('../auth');
 
 const router = express.Router();
 const STATUTS = new Set(['DEPOT', 'EN_COURS', 'PRET', 'LIVRE']);
@@ -103,6 +104,18 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+function validWorkshopName(value) {
+  return typeof value === 'string' &&
+    value.trim().length >= 1 &&
+    value.trim().length <= 80;
+}
+
+function validWorkshopEmail(value) {
+  return typeof value === 'string' &&
+    value.length <= 254 &&
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
 router.use((req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
   next();
@@ -191,6 +204,74 @@ router.delete('/public/appareils/:id/notifications', async (req, res, next) => {
 });
 
 router.use(requireTechnician);
+
+router.post('/workshops', requireAdmin, async (req, res, next) => {
+  const { nom, email, password, confirmation } = req.body || {};
+  if (
+    !validWorkshopName(nom) ||
+    !validWorkshopEmail(email) ||
+    typeof password !== 'string' ||
+    password.length < 6 ||
+    password.length > 12 ||
+    password !== confirmation
+  ) {
+    return res.status(400).json({
+      erreur: 'Vérifiez le nom, l’e-mail et le mot de passe (6 à 12 caractères).',
+    });
+  }
+
+  let client;
+  let transactionStarted = false;
+  try {
+    client = await db.pool.connect();
+    await client.query('BEGIN');
+    transactionStarted = true;
+    const primary = await client.query(
+      `SELECT id
+       FROM techniciens
+       WHERE role = 'ADMIN' AND account_id = id
+       ORDER BY created_at, id
+       LIMIT 1
+       FOR UPDATE`,
+    );
+    if (!primary.rowCount || primary.rows[0].id !== req.technicien.account_id) {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(403).json({
+        erreur: 'Seul l’administrateur principal peut créer un nouvel atelier.',
+      });
+    }
+
+    const accountId = crypto.randomUUID();
+    const passwordHash = await hashPassword(password);
+    const account = await client.query(
+      `INSERT INTO techniciens (id, account_id, nom, email, password_hash, role)
+       VALUES ($1, $1, $2, LOWER($3), $4, 'ADMIN')
+       ON CONFLICT (email) DO NOTHING
+       RETURNING id, account_id, nom, email, role`,
+      [accountId, nom.trim(), email.trim(), passwordHash],
+    );
+    if (!account.rowCount) {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(409).json({ erreur: 'Cette adresse e-mail est déjà utilisée.' });
+    }
+    await client.query('COMMIT');
+    transactionStarted = false;
+    res.status(201).json(account.rows[0]);
+  } catch (error) {
+    if (client && transactionStarted) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error(`Échec d’annulation de la création d’ateliers (${rollbackError.code || 'connexion'}).`);
+      }
+    }
+    next(error);
+  } finally {
+    if (client) client.release();
+  }
+});
 
 router.get('/settings', requireAdmin, async (req, res, next) => {
   try {

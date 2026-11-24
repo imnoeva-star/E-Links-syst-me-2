@@ -1200,7 +1200,7 @@ function showLogin(message = '') {
 }
 
 function showAuthForm(formId) {
-  ['login-form', 'registration-form', 'password-recovery-form', 'password-reset-form'].forEach((id) => {
+  ['login-form', 'password-recovery-form', 'password-reset-form'].forEach((id) => {
     $(`#${id}`).classList.toggle('hidden', id !== formId);
   });
 }
@@ -1273,56 +1273,6 @@ $('#login-form').addEventListener('submit', async (event) => {
   } finally {
     button.disabled = false;
     button.textContent = 'Se connecter';
-  }
-});
-
-$('#show-registration').addEventListener('click', () => {
-  showAuthForm('registration-form');
-  $('#registration-message').textContent = '';
-  $('#register-name').focus();
-});
-
-$('#show-login').addEventListener('click', () => {
-  showAuthForm('login-form');
-  $('#login-message').textContent = '';
-  $('#login-email').focus();
-});
-
-$('#registration-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const button = form.querySelector('button[type="submit"]');
-  const message = $('#registration-message');
-  button.disabled = true;
-  button.textContent = 'Création…';
-  message.textContent = '';
-  try {
-    const result = await request('/api/auth/register', {
-      method: 'POST',
-      body: JSON.stringify({
-        nom: $('#register-name').value.trim(),
-        email: $('#register-email').value.trim(),
-        password: $('#register-password').value,
-        confirmation: $('#register-confirmation').value,
-        code: $('#setup-code').value,
-        remember: $('#remember-session').checked,
-      }),
-    });
-    $('#register-password').value = '';
-    $('#register-confirmation').value = '';
-    $('#setup-code').value = '';
-    await showApp(result.technicien, { expiresAt: result.session_expires_at });
-  } catch (error) {
-    message.textContent = error.message;
-    message.className = 'mt-3 min-h-5 text-sm text-red-700';
-    if (error.status === 409) {
-      showAuthForm('login-form');
-      $('#login-message').textContent = error.message;
-      $('#login-message').className = 'mt-3 min-h-5 text-sm text-amber-700';
-    }
-  } finally {
-    button.disabled = false;
-    button.textContent = 'Créer mon compte';
   }
 });
 
@@ -1401,26 +1351,7 @@ $('#reset-back').addEventListener('click', () => {
 async function loadRegistrationSetup() {
   try {
     const setup = await request('/api/auth/setup');
-    $('#show-registration').classList.toggle('hidden', !setup.available);
     $('#password-recovery-config-note').classList.toggle('hidden', setup.passwordRecoveryAvailable);
-    $('#setup-code-container').classList.toggle('hidden', !setup.codeRequired);
-    $('#setup-code').required = setup.codeRequired;
-    $('#registration-title').textContent = setup.isFirstAccount
-      ? 'Créer le premier compte'
-      : 'Créer un atelier indépendant';
-    $('#registration-description').textContent = setup.isFirstAccount
-      ? 'Votre compte personnel sera le seul accès à cet atelier.'
-      : 'Chaque inscription crée un atelier privé avec ses propres dossiers et bilans.';
-    $('#setup-code-label').textContent = setup.isFirstAccount
-      ? 'Code de première configuration'
-      : 'Code d’invitation';
-    if (setup.configurationRequired) {
-      $('#login-message').textContent =
-        setup.isFirstAccount
-          ? 'La première inscription doit être activée dans la configuration du serveur.'
-          : 'La création de comptes nécessite un code d’invitation configuré par l’administrateur.';
-      $('#login-message').className = 'mt-3 min-h-5 text-sm text-amber-700';
-    }
   } catch (error) {
     console.error(error);
     $('#login-message').textContent = 'Impossible de vérifier l’accès. Réessayez.';
@@ -1985,6 +1916,46 @@ $('#settings-form').addEventListener('submit', async (event) => {
     message.className = 'text-sm text-red-700';
   } finally {
     button.disabled = false;
+  }
+});
+
+$('#workshop-account-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = form.querySelector('button[type="submit"]');
+  const message = $('#workshop-account-message');
+  const password = $('#workshop-account-password').value;
+  const confirmation = $('#workshop-account-confirmation').value;
+  if (password !== confirmation) {
+    message.textContent = 'Les mots de passe ne correspondent pas.';
+    message.className = 'text-sm text-red-700';
+    return;
+  }
+  button.disabled = true;
+  button.textContent = 'Création…';
+  message.textContent = '';
+  try {
+    if (state.isOffline || !navigator.onLine) {
+      throw new Error('Reconnectez-vous à Internet pour créer un nouvel atelier.');
+    }
+    await request('/api/workshops', {
+      method: 'POST',
+      body: JSON.stringify({
+        nom: $('#workshop-account-name').value.trim(),
+        email: $('#workshop-account-email').value.trim(),
+        password,
+        confirmation,
+      }),
+    });
+    form.reset();
+    message.textContent = 'Nouvel atelier créé. Son propriétaire peut maintenant se connecter.';
+    message.className = 'text-sm text-teal-700';
+  } catch (error) {
+    message.textContent = error.message;
+    message.className = 'text-sm text-red-700';
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Créer l’atelier indépendant';
   }
 });
 

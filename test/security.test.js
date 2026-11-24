@@ -90,8 +90,9 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(html, /data-report-period="year"/);
   assert.match(html, /id="report-donut"/);
   assert.doesNotMatch(html, /Ravi de vous revoir/);
+  assert.doesNotMatch(html, /id="show-registration"|Créer un compte/);
+  assert.match(html, /id="workshop-account-form"/);
   assert.match(html, /id="login-form"/);
-  assert.match(html, /id="registration-form"/);
   assert.match(html, /id="remember-session"/);
   assert.match(html, /id="show-password-recovery"/);
   assert.match(html, /id="password-recovery-form"/);
@@ -202,7 +203,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(pageHtml, /rel="apple-touch-icon" href="\/icon-192\.png"/);
   const serviceWorker = await fetch(`${baseUrl}/service-worker.js`);
   const serviceWorkerText = await serviceWorker.text();
-  assert.match(serviceWorkerText, /atelier-express-v28/);
+  assert.match(serviceWorkerText, /atelier-express-v29/);
   assert.match(serviceWorkerText, /offline-store\.js/);
   assert.match(serviceWorkerText, /icon-512\.png/);
   assert.match(serviceWorkerText, /addEventListener\('push'/);
@@ -1066,109 +1067,32 @@ test('initial registration validates password and confirmation before database a
   assert.match((await response.json()).erreur, /6 à 12/);
 });
 
-test('independent workshop registration requires the configured invitation code', async () => {
+test('public registration is disabled and workshop creation is administrator-only', async () => {
   await startServer();
-  const originalConnect = db.pool.connect;
-  const originalInviteCode = process.env.TECHNICIAN_INVITE_CODE;
-  const originalNodeEnv = process.env.NODE_ENV;
-  let insertedAccount = false;
-  process.env.NODE_ENV = 'development';
-  process.env.TECHNICIAN_INVITE_CODE = 'atelier-invite-test';
-  db.pool.connect = async () => ({
-    query: async (sql) => {
-      if (sql === 'SELECT EXISTS (SELECT 1 FROM techniciens) AS has_technicians') {
-        return { rows: [{ has_technicians: true }], rowCount: 1 };
-      }
-      if (sql.startsWith('INSERT INTO techniciens')) insertedAccount = true;
-      return { rows: [], rowCount: 1 };
-    },
-    release: () => {},
+  const publicResponse = await fetch(`${baseUrl}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      nom: 'Nova',
+      email: 'nova@example.com',
+      password: 'Aa1234',
+      confirmation: 'Aa1234',
+    }),
   });
-  try {
-    const response = await fetch(`${baseUrl}/api/auth/register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        nom: 'Nova',
-        email: 'nova@example.com',
-        password: 'Aa1234',
-        confirmation: 'Aa1234',
-        code: 'code-invalide',
-      }),
-    });
-    assert.equal(response.status, 403);
-    assert.match((await response.json()).erreur, /Code d’invitation/);
-    assert.equal(insertedAccount, false);
-  } finally {
-    db.pool.connect = originalConnect;
-    if (originalInviteCode === undefined) delete process.env.TECHNICIAN_INVITE_CODE;
-    else process.env.TECHNICIAN_INVITE_CODE = originalInviteCode;
-    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
-    else process.env.NODE_ENV = originalNodeEnv;
-  }
-});
+  assert.equal(publicResponse.status, 403);
+  assert.match((await publicResponse.json()).erreur, /administrateur principal depuis les Paramètres/);
 
-test('registration creates a private administrator workspace', async () => {
-  await startServer();
-  const originalConnect = db.pool.connect;
-  const originalInviteCode = process.env.TECHNICIAN_INVITE_CODE;
-  const originalNodeEnv = process.env.NODE_ENV;
-  let accountId;
-  let insertedValues;
-  process.env.NODE_ENV = 'development';
-  process.env.TECHNICIAN_INVITE_CODE = 'atelier-invite-test';
-  db.pool.connect = async () => ({
-    query: async (sql, values = []) => {
-      if (sql === 'SELECT EXISTS (SELECT 1 FROM techniciens) AS has_technicians') {
-        return { rows: [{ has_technicians: true }], rowCount: 1 };
-      }
-      if (sql.startsWith('INSERT INTO techniciens')) {
-        insertedValues = values;
-        accountId = values[0];
-        return {
-          rows: [{
-            id: accountId,
-            account_id: accountId,
-            nom: 'Nova',
-            email: 'nova@example.com',
-            role: 'ADMIN',
-          }],
-          rowCount: 1,
-        };
-      }
-      if (sql.startsWith('INSERT INTO sessions_techniciens')) {
-        return { rows: [{ expires_at: '2026-12-01T00:00:00.000Z' }], rowCount: 1 };
-      }
-      return { rows: [], rowCount: 1 };
-    },
-    release: () => {},
+  const unauthenticated = await fetch(`${baseUrl}/api/workshops`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      nom: 'Nouvel atelier',
+      email: 'atelier@example.com',
+      password: 'Aa1234',
+      confirmation: 'Aa1234',
+    }),
   });
-  try {
-    const response = await fetch(`${baseUrl}/api/auth/register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        nom: 'Nova',
-        email: 'nova@example.com',
-        password: 'Aa1234',
-        confirmation: 'Aa1234',
-        code: 'atelier-invite-test',
-      }),
-    });
-    assert.equal(response.status, 201);
-    const result = await response.json();
-    assert.equal(result.technicien.role, 'ADMIN');
-    assert.equal(result.technicien.account_id, accountId);
-    assert.equal(result.technicien.legacy_cache_owner, false);
-    assert.equal(insertedValues[0], accountId);
-    assert.match(accountId, /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
-  } finally {
-    db.pool.connect = originalConnect;
-    if (originalInviteCode === undefined) delete process.env.TECHNICIAN_INVITE_CODE;
-    else process.env.TECHNICIAN_INVITE_CODE = originalInviteCode;
-    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
-    else process.env.NODE_ENV = originalNodeEnv;
-  }
+  assert.equal(unauthenticated.status, 401);
 });
 
 test('employee accounts cannot log in as independent workshop owners', async () => {
