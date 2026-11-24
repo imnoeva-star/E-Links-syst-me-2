@@ -826,6 +826,36 @@ async function updateOfflineStatus(message = '') {
 async function request(url, options = {}) {
   const method = (options.method || 'GET').toUpperCase();
   const isSessionCheck = url === '/api/auth/session';
+  const isAuthRequest = url === '/api/auth/setup' || url.startsWith('/api/auth/');
+  if (isAuthRequest) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
+    try {
+      const response = await fetch(url, {
+        ...options,
+        credentials: 'same-origin',
+        signal: controller.signal,
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+      });
+      const data = response.status === 204 ? null : await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const error = new Error(data.erreur || 'Une erreur est survenue.');
+        error.status = response.status;
+        throw error;
+      }
+      setOfflineMode(false);
+      return data;
+    } catch (error) {
+      if (error instanceof TypeError || error.name === 'AbortError') {
+        const networkError = new Error('Connexion Internet requise pour créer ou ouvrir un compte.');
+        networkError.offline = true;
+        throw networkError;
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
   const accountId = state.technician?.account_id || null;
   const isCurrentRequest = () => !accountId || state.technician?.account_id === accountId;
   const staleRequestError = () => {

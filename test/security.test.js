@@ -142,6 +142,8 @@ test('static app includes local production CSS and the technician login', async 
   const scriptText = await script.text();
   assert.match(scriptText, /playWelcome\(technician\.nom\)/);
   assert.match(scriptText, /window\.addEventListener\('popstate'/);
+  assert.match(scriptText, /const isAuthRequest = url === '\/api\/auth\/setup' \|\| url\.startsWith\('\/api\/auth\/'\)/);
+  assert.match(scriptText, /Connexion Internet requise pour créer ou ouvrir un compte/);
   assert.match(scriptText, /function resetIntakeForm\(\)/);
   assert.match(scriptText, /const isDelivered = device\.statut === 'LIVRE' \|\| Boolean\(device\.acte_valide\)/);
   assert.match(scriptText, /device-archive-button'\)\.classList\.toggle\('hidden', state\.technician\?\.role !== 'ADMIN' \|\| isDelivered\)/);
@@ -200,7 +202,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(pageHtml, /rel="apple-touch-icon" href="\/icon-192\.png"/);
   const serviceWorker = await fetch(`${baseUrl}/service-worker.js`);
   const serviceWorkerText = await serviceWorker.text();
-  assert.match(serviceWorkerText, /atelier-express-v27/);
+  assert.match(serviceWorkerText, /atelier-express-v28/);
   assert.match(serviceWorkerText, /offline-store\.js/);
   assert.match(serviceWorkerText, /icon-512\.png/);
   assert.match(serviceWorkerText, /addEventListener\('push'/);
