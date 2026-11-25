@@ -227,7 +227,7 @@ router.get('/workshop-requests', requireAdmin, async (req, res, next) => {
       `SELECT id, nom, email, status, code_expires_at::text AS code_expires_at,
               code_attempts, created_at::text AS created_at, reviewed_at::text AS reviewed_at
        FROM workshop_account_requests
-       WHERE status IN ('PENDING', 'APPROVED')
+       WHERE status IN ('PENDING', 'APPROVED', 'EXPIRED')
        ORDER BY created_at DESC`,
     );
     res.json(result.rows);
@@ -293,6 +293,70 @@ router.post('/workshop-requests/:id/approve', requireAdmin, async (req, res, nex
         await client.query('ROLLBACK');
       } catch (rollbackError) {
         console.error(`Échec d’annulation de l’approbation (${rollbackError.code || 'connexion'}).`);
+      }
+    }
+    next(error);
+  } finally {
+    if (client) client.release();
+  }
+});
+
+router.post('/workshop-requests/:id/reissue', requireAdmin, async (req, res, next) => {
+  if (!UUID_PATTERN.test(req.params.id)) {
+    return res.status(400).json({ erreur: 'Demande invalide.' });
+  }
+  let client;
+  let transactionStarted = false;
+  try {
+    client = await db.pool.connect();
+    await client.query('BEGIN');
+    transactionStarted = true;
+    const primary = await client.query(
+      `SELECT id FROM techniciens
+       WHERE role = 'ADMIN' AND account_id = id
+       ORDER BY created_at, id
+       LIMIT 1
+       FOR UPDATE`,
+    );
+    if (!primary.rowCount || primary.rows[0].id !== req.technicien.account_id) {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(403).json({ erreur: 'Seul l’administrateur principal peut émettre un nouveau code.' });
+    }
+    const requestResult = await client.query(
+      `SELECT id, email FROM workshop_account_requests
+       WHERE id = $1 AND status IN ('APPROVED', 'EXPIRED')
+       FOR UPDATE`,
+      [req.params.id],
+    );
+    if (!requestResult.rowCount) {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return res.status(409).json({ erreur: 'Cette demande ne peut plus recevoir de code.' });
+    }
+    const code = String(crypto.randomInt(100000, 1000000));
+    const codeHash = crypto.createHash('sha256').update(code).digest('hex');
+    await client.query(
+      `UPDATE workshop_account_requests
+       SET status = 'APPROVED', code_hash = $2,
+           code_expires_at = NOW() + INTERVAL '3 minutes',
+           code_attempts = 0, reviewed_at = NOW()
+       WHERE id = $1`,
+      [req.params.id, codeHash],
+    );
+    await client.query('COMMIT');
+    transactionStarted = false;
+    res.json({
+      code,
+      expires_in_seconds: 180,
+      email: requestResult.rows[0].email,
+    });
+  } catch (error) {
+    if (client && transactionStarted) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error(`Échec d’annulation du renouvellement de code (${rollbackError.code || 'connexion'}).`);
       }
     }
     next(error);

@@ -1988,23 +1988,27 @@ function renderWorkshopRequests(requests) {
     name.textContent = `${request.nom} · ${request.email}`;
     const status = document.createElement('p');
     status.className = 'mt-1 text-xs text-slate-500';
+    const expiresAt = Date.parse(request.code_expires_at || '');
     status.textContent = request.status === 'APPROVED'
-      ? 'Approuvée · code valable 3 minutes'
-      : 'En attente';
+      ? Number.isFinite(expiresAt)
+        ? `Approuvée · code valable jusqu’au ${new Date(expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+        : 'Approuvée · code à renouveler'
+      : request.status === 'EXPIRED' ? 'Code expiré' : 'En attente';
     item.append(name, status);
-    if (request.status === 'PENDING') {
+    if (request.status === 'PENDING' || request.status === 'APPROVED' || request.status === 'EXPIRED') {
       const actions = document.createElement('div');
       actions.className = 'mt-3 flex gap-2';
       const approve = document.createElement('button');
       approve.type = 'button';
       approve.className = 'flex-1 rounded-lg bg-teal-700 px-3 py-2 text-sm font-bold text-white';
-      approve.textContent = 'Approuver';
+      approve.textContent = request.status === 'PENDING' ? 'Approuver' : 'Émettre un nouveau code';
       approve.addEventListener('click', async () => {
         approve.disabled = true;
         try {
-          const result = await request(`/api/workshop-requests/${request.id}/approve`, { method: 'POST' });
+          const action = request.status === 'PENDING' ? 'approve' : 'reissue';
+          const result = await request(`/api/workshop-requests/${request.id}/${action}`, { method: 'POST' });
           $('#workshop-request-admin-message').textContent =
-            `Code pour ${result.email} : ${result.code} · valable 3 minutes. Communiquez-le au demandeur.`;
+            `Nouveau code pour ${result.email} : ${result.code} · valable 3 minutes. Il remplace tout code précédent.`;
           $('#workshop-request-admin-message').className = 'mt-3 text-sm font-bold text-teal-800';
           await loadSettings();
         } catch (error) {
@@ -2012,21 +2016,25 @@ function renderWorkshopRequests(requests) {
           $('#workshop-request-admin-message').className = 'mt-3 text-sm text-red-700';
         }
       });
-      const reject = document.createElement('button');
-      reject.type = 'button';
-      reject.className = 'rounded-lg bg-slate-100 px-3 py-2 text-sm font-bold text-slate-700';
-      reject.textContent = 'Refuser';
-      reject.addEventListener('click', async () => {
-        reject.disabled = true;
-        try {
-          await request(`/api/workshop-requests/${request.id}/reject`, { method: 'POST' });
-          await loadSettings();
-        } catch (error) {
-          $('#workshop-request-admin-message').textContent = error.message;
-          $('#workshop-request-admin-message').className = 'mt-3 text-sm text-red-700';
-        }
-      });
-      actions.append(approve, reject);
+      if (request.status === 'PENDING') {
+        const reject = document.createElement('button');
+        reject.type = 'button';
+        reject.className = 'rounded-lg bg-slate-100 px-3 py-2 text-sm font-bold text-slate-700';
+        reject.textContent = 'Refuser';
+        reject.addEventListener('click', async () => {
+          reject.disabled = true;
+          try {
+            await request(`/api/workshop-requests/${request.id}/reject`, { method: 'POST' });
+            await loadSettings();
+          } catch (error) {
+            $('#workshop-request-admin-message').textContent = error.message;
+            $('#workshop-request-admin-message').className = 'mt-3 text-sm text-red-700';
+          }
+        });
+        actions.append(approve, reject);
+      } else {
+        actions.append(approve);
+      }
       item.append(actions);
     }
     list.append(item);

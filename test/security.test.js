@@ -155,6 +155,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(scriptText, /device-qr-section'\)\.classList\.toggle\('hidden', isDelivered\)/);
   assert.match(scriptText, /expense-form'\)\.classList\.toggle\('hidden', isDelivered\)/);
   assert.match(scriptText, /\/api\/reports\/personal/);
+  assert.match(scriptText, /Émettre un nouveau code/);
   assert.match(scriptText, /getCoalescedEvents/);
   assert.match(scriptText, /quadraticCurveTo/);
   assert.match(scriptText, /setPointerCapture\(event\.pointerId\)/);
@@ -205,7 +206,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(pageHtml, /rel="apple-touch-icon" href="\/icon-192\.png"/);
   const serviceWorker = await fetch(`${baseUrl}/service-worker.js`);
   const serviceWorkerText = await serviceWorker.text();
-  assert.match(serviceWorkerText, /atelier-express-v30/);
+  assert.match(serviceWorkerText, /atelier-express-v31/);
   assert.match(serviceWorkerText, /offline-store\.js/);
   assert.match(serviceWorkerText, /icon-512\.png/);
   assert.match(serviceWorkerText, /addEventListener\('push'/);
@@ -1105,6 +1106,59 @@ test('public workshop request creates no account before approval', async () => {
 
     const unauthenticated = await fetch(`${baseUrl}/api/workshop-requests`);
     assert.equal(unauthenticated.status, 401);
+  } finally {
+    db.pool.connect = originalConnect;
+    db.query = originalQuery;
+  }
+});
+
+test('principal admin can reissue a lost code for an expired workshop request', async () => {
+  await startServer();
+  const originalQuery = db.query;
+  const originalConnect = db.pool.connect;
+  const requestId = '00000000-0000-4000-8000-000000000031';
+  const adminId = AUTHENTICATED_TECHNICIAN.id;
+  let updatedCodeHash;
+  let released = false;
+  db.query = async (sql) => {
+    if (sql.includes('FROM sessions_techniciens s')) {
+      return { rows: [{ ...AUTHENTICATED_TECHNICIAN }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  };
+  db.pool.connect = async () => ({
+    query: async (sql, values = []) => {
+      if (sql.includes('SELECT id FROM techniciens')) {
+        return { rows: [{ id: adminId }], rowCount: 1 };
+      }
+      if (sql.includes('SELECT id, email FROM workshop_account_requests')) {
+        assert.match(sql, /status IN \('APPROVED', 'EXPIRED'\)/);
+        return { rows: [{ id: requestId, email: 'atelier@example.com' }], rowCount: 1 };
+      }
+      if (sql.includes('UPDATE workshop_account_requests')) {
+        assert.match(sql, /code_attempts = 0/);
+        assert.match(sql, /INTERVAL '3 minutes'/);
+        updatedCodeHash = values[1];
+      }
+      return { rows: [], rowCount: 1 };
+    },
+    release: () => { released = true; },
+  });
+  try {
+    const response = await fetch(`${baseUrl}/api/workshop-requests/${requestId}/reissue`, {
+      method: 'POST',
+      headers: { Cookie: `atelier_session=${'a'.repeat(64)}` },
+    });
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.match(result.code, /^\d{6}$/);
+    assert.equal(result.email, 'atelier@example.com');
+    assert.equal(result.expires_in_seconds, 180);
+    assert.equal(
+      updatedCodeHash,
+      crypto.createHash('sha256').update(result.code).digest('hex'),
+    );
+    assert.equal(released, true);
   } finally {
     db.pool.connect = originalConnect;
     db.query = originalQuery;
