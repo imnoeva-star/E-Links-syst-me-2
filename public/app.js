@@ -1114,16 +1114,13 @@ async function syncPendingOperations() {
       if (!currentOperation || blockedDeviceIds.has(currentOperation.deviceId)) continue;
       let response;
       if (currentOperation.blocked) {
-        const isVersionConflict = /ce dossier a changé sur un autre appareil/i.test(currentOperation.error || '');
-        if (isVersionConflict) {
-          const reconciliation = await reconcileVersionConflict(currentOperation);
-          if (reconciliation.resolved) {
-            await finishSyncedOperation(currentOperation, reconciliation.data);
-            await OfflineStore.remove('operations', currentOperation.id);
-            continue;
-          }
-          response = reconciliation.response;
+        const reconciliation = await reconcileVersionConflict(currentOperation);
+        if (reconciliation.resolved) {
+          await finishSyncedOperation(currentOperation, reconciliation.data);
+          await OfflineStore.remove('operations', currentOperation.id);
+          continue;
         }
+        response = reconciliation.response;
         if (!response) {
           if (currentOperation.deviceId) blockedDeviceIds.add(currentOperation.deviceId);
           continue;

@@ -156,6 +156,8 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(scriptText, /expense-form'\)\.classList\.toggle\('hidden', isDelivered\)/);
   assert.match(scriptText, /\/api\/reports\/personal/);
   assert.match(scriptText, /Émettre un nouveau code/);
+  assert.match(scriptText, /if \(currentOperation\.blocked\) \{\s*const reconciliation = await reconcileVersionConflict\(currentOperation\)/);
+  assert.doesNotMatch(scriptText, /ce dossier a changé sur un autre appareil\/i\.test\(currentOperation\.error/);
   assert.match(scriptText, /getCoalescedEvents/);
   assert.match(scriptText, /quadraticCurveTo/);
   assert.match(scriptText, /setPointerCapture\(event\.pointerId\)/);
@@ -206,7 +208,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(pageHtml, /rel="apple-touch-icon" href="\/icon-192\.png"/);
   const serviceWorker = await fetch(`${baseUrl}/service-worker.js`);
   const serviceWorkerText = await serviceWorker.text();
-  assert.match(serviceWorkerText, /atelier-express-v31/);
+  assert.match(serviceWorkerText, /atelier-express-v32/);
   assert.match(serviceWorkerText, /offline-store\.js/);
   assert.match(serviceWorkerText, /icon-512\.png/);
   assert.match(serviceWorkerText, /addEventListener\('push'/);
