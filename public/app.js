@@ -42,6 +42,8 @@ const state = {
   hasSignature: false,
   pendingIntake: null,
   pendingPayment: null,
+  lastPaymentReceipt: null,
+  lastExpenseReceipt: null,
   approvalVersion: null,
   passwordResetToken: null,
   isOffline: false,
@@ -642,7 +644,7 @@ async function offlineRequest(url, options = {}) {
     const hasExpensesUsd = Object.prototype.hasOwnProperty.call(body, 'frais_usd');
     const hasExpensesCdf = Object.prototype.hasOwnProperty.call(body, 'frais_cdf');
     if (hasExpensesUsd !== hasExpensesCdf) {
-      throw new Error('Saisissez les frais en USD et en FC.');
+      throw new Error('Saisissez les pièces en USD et en FC.');
     }
     if (hasExpensesUsd) {
       const validAmount = (amount) =>
@@ -652,7 +654,7 @@ async function offlineRequest(url, options = {}) {
         amount <= 9999999999.99 &&
         Math.round(amount * 100) === amount * 100;
       if (!validAmount(body.frais_usd) || !validAmount(body.frais_cdf)) {
-        throw new Error('Vérifiez les totaux des frais en USD et en FC.');
+        throw new Error('Vérifiez les totaux des pièces en USD et en FC.');
       }
       if (Number(device.frais_usd || 0) !== body.frais_usd) updatedDevice.frais_usd_saisis_at = now;
       if (Number(device.frais_cdf || 0) !== body.frais_cdf) updatedDevice.frais_cdf_saisis_at = now;
@@ -1998,7 +2000,7 @@ $('#settings-form').addEventListener('submit', async (event) => {
       throw new Error('Synchronisez les actions en attente avant de modifier les statistiques.');
     }
     if (!confirm(nextDate
-      ? `Les bilans ignoreront les encaissements et frais antérieurs au ${nextDate}. Aucune donnée ne sera supprimée. Continuer ?`
+      ? `Les bilans ignoreront les encaissements et pièces antérieurs au ${nextDate}. Aucune donnée ne sera supprimée. Continuer ?`
       : 'Supprimer la date de départ ? Les bilans réutiliseront tout l’historique. Continuer ?')) return;
     message.textContent = 'Enregistrement…';
     message.className = 'text-sm text-slate-600';
@@ -2053,6 +2055,7 @@ $('#export-data').addEventListener('click', async () => {
 
 let activeDeviceId = null;
 let activeDeviceVersion = null;
+let activeDeviceExpenses = null;
 let deviceReturnScrollY = 0;
 let deviceReturnFocus = null;
 let deviceHistoryEntry = false;
@@ -2073,8 +2076,19 @@ async function openDevice(id, trigger = null) {
       device.statut !== 'LIVRE' &&
       !device.acte_valide;
     const isDelivered = device.statut === 'LIVRE' || Boolean(device.acte_valide);
+    const paidUsd = Number(device.paiements_usd || 0);
+    const paidCdf = Number(device.paiements_cdf || 0);
+    const hasPayment = paidUsd > 0 || paidCdf > 0 ||
+      state.lastPaymentReceipt?.deviceId === device.id;
+    const hasExpenses = Number(device.frais_usd || 0) > 0 ||
+      Number(device.frais_cdf || 0) > 0 ||
+      state.lastExpenseReceipt?.deviceId === device.id;
+    activeDeviceExpenses = {
+      deviceId: device.id,
+      usd: Number(device.frais_usd || 0),
+      cdf: Number(device.frais_cdf || 0),
+    };
     $('#device-edit-toggle').classList.toggle('hidden', !canManage);
-    $('#device-archive-button').classList.toggle('hidden', state.technician?.role !== 'ADMIN' || isDelivered);
     $('#device-price-row').classList.remove('hidden');
     $('#device-payments-section').classList.remove('hidden');
     $('#device-edit-section').classList.add('hidden');
@@ -2105,9 +2119,12 @@ async function openDevice(id, trigger = null) {
       ? String(device.frais_cdf)
       : '';
     $('#expense-message').textContent = '';
-    $('#device-repair-history').classList.toggle('hidden', !isDelivered);
-    $('#device-history-expense-usd').textContent = formatMoney(device.frais_usd, 'USD');
-    $('#device-history-expense-cdf').textContent = formatMoney(device.frais_cdf, 'CDF');
+    $('#expense-entry').classList.toggle('hidden', hasExpenses);
+    $('#expense-receipt').classList.toggle('hidden', !hasExpenses);
+    $('#expense-receipt-summary').textContent =
+      `${formatMoney(device.frais_usd, 'USD')} · ${formatMoney(device.frais_cdf, 'CDF')}`;
+    $('#expense-edit').classList.toggle('hidden', isDelivered);
+    $('#expense-form').classList.toggle('hidden', isDelivered && !hasExpenses);
     $('#device-qr-section').classList.toggle('hidden', isDelivered);
     $('#device-qr-result').classList.add('hidden');
     $('#device-qr-message').textContent = '';
@@ -2125,9 +2142,23 @@ async function openDevice(id, trigger = null) {
     $('#device-signature-missing').classList.toggle('hidden', hasSignature);
     if (hasSignature) signature.src = device.signature_data;
     else signature.removeAttribute('src');
-    $('#payment-form').classList.toggle('hidden', device.statut === 'LIVRE');
-    $('#expense-form').classList.toggle('hidden', isDelivered);
+    $('#payment-entry').classList.toggle('hidden', hasPayment);
+    $('#payment-receipt').classList.toggle('hidden', !hasPayment);
+    $('#payment-add-another').classList.toggle('hidden', isDelivered);
+    $('#payment-form').classList.toggle('hidden', isDelivered && !hasPayment);
+    $('#payment-title').textContent = hasPayment ? 'Paiement' : 'Enregistrer un paiement';
+    const lastPayment = state.lastPaymentReceipt?.deviceId === device.id
+      ? state.lastPaymentReceipt
+      : null;
+    const paymentTotals = [
+      paidUsd > 0 ? formatMoney(paidUsd, 'USD') : '',
+      paidCdf > 0 ? formatMoney(paidCdf, 'CDF') : '',
+    ].filter(Boolean).join(' · ') || 'Aucun autre paiement';
+    $('#payment-receipt-summary').textContent = lastPayment
+      ? `Dernier versement : ${formatMoney(lastPayment.amount, lastPayment.currency)} · Total reçu : ${paymentTotals}`
+      : `Total reçu : ${paymentTotals}`;
     $('#payment-message').textContent = '';
+    $('#expense-message').textContent = '';
     $('#payment-amount').value = '';
     $('#payment-currency').value = 'USD';
     updatePaymentPlaceholder();
@@ -2141,7 +2172,7 @@ async function openDevice(id, trigger = null) {
       deviceView.classList.remove('hidden');
       window.scrollTo(0, 0);
     }
-    $('#device-close').focus();
+    $('#device-title').focus();
   } catch (error) {
     alert(error.message);
   }
@@ -2192,22 +2223,6 @@ $('#device-edit-form').addEventListener('submit', async (event) => {
   }
 });
 
-$('#device-archive-button').addEventListener('click', async () => {
-  if (!activeDeviceId || !activeDeviceVersion) return;
-  if (!confirm('Archiver ce dossier ? Il sera masqué des listes, mais vous pourrez le restaurer dans Paramètres.')) return;
-  const deviceId = activeDeviceId;
-  try {
-    await request(`/api/appareils/${deviceId}`, {
-      method: 'DELETE',
-      headers: { 'X-Record-Version': activeDeviceVersion },
-    });
-    closeDevice();
-    await refresh();
-  } catch (error) {
-    alert(error.message);
-  }
-});
-
 async function loadDeviceQr(id) {
   const button = $('#device-qr-button');
   const message = $('#device-qr-message');
@@ -2238,22 +2253,65 @@ $('#device-qr-button').addEventListener('click', () => {
   if (activeDeviceId) loadDeviceQr(activeDeviceId);
 });
 
-function closeDevice({ fromHistory = false } = {}) {
+function closeDevice({ fromHistory = false, returnToWaiting = false } = {}) {
   $('#device-dialog').classList.add('hidden');
   $('#app-main').classList.remove('hidden');
-  window.scrollTo(0, deviceReturnScrollY);
-  if (deviceReturnFocus && deviceReturnFocus.isConnected) deviceReturnFocus.focus();
-  else $('#menu-toggle').focus();
+  if (!returnToWaiting) {
+    window.scrollTo(0, deviceReturnScrollY);
+    if (deviceReturnFocus && deviceReturnFocus.isConnected) deviceReturnFocus.focus();
+    else $('#menu-toggle').focus();
+  }
   deviceReturnFocus = null;
   activeDeviceId = null;
   activeDeviceVersion = null;
+  activeDeviceExpenses = null;
   if (!fromHistory && deviceHistoryEntry) {
     window.history.replaceState(null, '', window.location.href);
   }
   deviceHistoryEntry = false;
 }
 
-$('#device-close').addEventListener('click', closeDevice);
+async function showWaitingRoomOnDeposits() {
+  $('#waiting-status').value = 'DEPOT';
+  $('#waiting-search').value = '';
+  waitingPage = 1;
+  showPage('waiting', true, false);
+  try {
+    await loadDevices('waiting');
+    $('#waiting-list').scrollIntoView({ block: 'start', behavior: 'smooth' });
+  } catch (error) {
+    showConnectionError(error);
+  }
+}
+
+$('#device-save-close').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  if (button.disabled) return;
+  if (!$('#payment-entry').classList.contains('hidden') && $('#payment-amount').value) {
+    $('#payment-message').textContent = 'Enregistrez le paiement avant de terminer le dossier.';
+    $('#payment-message').className = 'text-sm text-amber-800';
+    $('#payment-form').querySelector('button[type="submit"]').focus();
+    return;
+  }
+  button.disabled = true;
+  button.textContent = 'Enregistrement…';
+  try {
+    const expensesChanged = activeDeviceExpenses?.deviceId === activeDeviceId &&
+      (
+        Number($('#device-expense-usd').value || 0) !== activeDeviceExpenses.usd ||
+        Number($('#device-expense-cdf').value || 0) !== activeDeviceExpenses.cdf
+      );
+    if (!$('#expense-entry').classList.contains('hidden') && expensesChanged) {
+      const saved = await saveExpenses();
+      if (!saved) return;
+    }
+    closeDevice({ returnToWaiting: true });
+    await showWaitingRoomOnDeposits();
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Enregistrer le dossier';
+  }
+});
 
 document.addEventListener('keydown', (event) => {
   if (
@@ -2373,7 +2431,6 @@ $('#telephone').addEventListener('input', () => {
 $('#nom').addEventListener('input', () => { autoFilledClientName = false; });
 
 let submittingIntake = false;
-let intakeNoticeTimer;
 const intakeForm = $('#intake-form');
 const intakeButton = intakeForm.querySelector('button[type="submit"]');
 
@@ -2434,15 +2491,7 @@ intakeForm.addEventListener('submit', async (event) => {
     });
     state.pendingIntake = null;
     resetIntakeForm();
-    $('#intake-notice').textContent =
-      `Dépôt enregistré : ${deviceTypeNames[device.type_appareil] || deviceTypeNames.TELEPHONE} · ${device.marque} ${device.modele || ''}`.trim();
-    $('#intake-notice').classList.remove('hidden');
-    window.clearTimeout(intakeNoticeTimer);
-    intakeNoticeTimer = window.setTimeout(() => {
-      $('#intake-notice').classList.add('hidden');
-    }, 5000);
-    showPage('dashboard', false, false);
-    await refresh();
+    await showWaitingRoomOnDeposits();
   } catch (error) {
     message.textContent = error.message;
     message.className = 'text-sm text-red-700';
@@ -2455,10 +2504,8 @@ intakeForm.addEventListener('submit', async (event) => {
 });
 
 let submittingExpense = false;
-$('#expense-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  if (!activeDeviceId || submittingExpense) return;
-  const form = event.currentTarget;
+async function saveExpenses(form = $('#expense-form')) {
+  if (!activeDeviceId || submittingExpense) return false;
   const button = form.querySelector('button[type="submit"]');
   const message = $('#expense-message');
   const deviceId = activeDeviceId;
@@ -2474,38 +2521,43 @@ $('#expense-form').addEventListener('submit', async (event) => {
   )) {
     message.textContent = 'Saisissez des totaux valides à deux décimales maximum.';
     message.className = 'text-sm text-red-700';
-    return;
+    return false;
   }
   submittingExpense = true;
   button.disabled = true;
   button.textContent = 'Enregistrement…';
-  message.textContent = 'Enregistrement des frais…';
+  message.textContent = 'Enregistrement des pièces…';
   message.className = 'text-sm text-slate-600';
   try {
-    const updated = await request(`/api/appareils/${deviceId}`, {
+    await request(`/api/appareils/${deviceId}`, {
       method: 'PATCH',
       body: JSON.stringify(body),
       headers: activeDeviceVersion ? { 'X-Record-Version': activeDeviceVersion } : {},
     });
-    activeDeviceVersion = updated.updated_at;
-    $('#device-updated').textContent = formatDate(updated.updated_at);
-    $('#device-expense-usd').value = Number(updated.frais_usd || 0) > 0
-      ? String(updated.frais_usd)
-      : '';
-    $('#device-expense-cdf').value = Number(updated.frais_cdf || 0) > 0
-      ? String(updated.frais_cdf)
-      : '';
-    message.textContent = 'Frais enregistrés; ils seront déduits de votre bilan personnel.';
-    message.className = 'text-sm text-teal-800';
+    state.lastExpenseReceipt = { deviceId };
+    if (activeDeviceId === deviceId) await openDevice(deviceId);
     await refresh();
+    return true;
   } catch (error) {
     message.textContent = error.message;
     message.className = 'text-sm text-red-700';
+    return false;
   } finally {
     submittingExpense = false;
     button.disabled = false;
-    button.textContent = 'Enregistrer le total des frais';
+    button.textContent = 'Enregistrer les pièces';
   }
+}
+
+$('#expense-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  await saveExpenses(event.currentTarget);
+});
+
+$('#expense-edit').addEventListener('click', () => {
+  $('#expense-receipt').classList.add('hidden');
+  $('#expense-entry').classList.remove('hidden');
+  $('#device-expense-usd').focus();
 });
 
 let submittingPayment = false;
@@ -2540,10 +2592,12 @@ $('#payment-form').addEventListener('submit', async (event) => {
       headers: { 'Idempotency-Key': state.pendingPayment.key },
     });
     state.pendingPayment = null;
-    form.reset();
+    state.lastPaymentReceipt = {
+      deviceId,
+      amount: paymentBody.montant,
+      currency: paymentBody.devise,
+    };
     await openDevice(deviceId);
-    $('#payment-message').textContent = 'Paiement enregistré.';
-    $('#payment-message').className = 'text-sm text-teal-700';
     await refresh();
   } catch (error) {
     message.textContent = error.message;
@@ -2553,6 +2607,12 @@ $('#payment-form').addEventListener('submit', async (event) => {
     button.disabled = false;
     button.textContent = 'Enregistrer le paiement';
   }
+});
+
+$('#payment-add-another').addEventListener('click', () => {
+  $('#payment-receipt').classList.add('hidden');
+  $('#payment-entry').classList.remove('hidden');
+  $('#payment-amount').focus();
 });
 
 const dialog = $('#approval-dialog');
@@ -2712,25 +2772,39 @@ $('#clear-signature').addEventListener('click', () => {
   state.hasSignature = false;
 });
 
+let submittingApproval = false;
 $('#save-approval').addEventListener('click', async () => {
   const message = $('#approval-message');
+  const button = $('#save-approval');
+  if (submittingApproval) return;
   if (!state.hasSignature) {
     message.textContent = 'La signature du client est requise.';
     message.className = 'mt-2 text-sm text-red-700';
     return;
   }
+  submittingApproval = true;
+  button.disabled = true;
+  button.textContent = 'Enregistrement…';
+  message.textContent = 'Enregistrement de la restitution…';
+  message.className = 'mt-2 text-sm text-slate-600';
   try {
     await request(`/api/appareils/${state.approvalId}/approbation`, {
       method: 'POST',
       body: JSON.stringify({ signature_data: canvas.toDataURL('image/png') }),
       headers: state.approvalVersion ? { 'X-Record-Version': state.approvalVersion } : {},
     });
+    message.textContent = 'Restitution enregistrée.';
+    message.className = 'mt-2 text-sm font-bold text-teal-700';
     dialog.close();
     showPage('archive', true, false);
     await refresh();
   } catch (error) {
     message.textContent = error.message;
     message.className = 'mt-2 text-sm text-red-700';
+  } finally {
+    submittingApproval = false;
+    button.disabled = false;
+    button.textContent = 'Signer et restituer';
   }
 });
 
