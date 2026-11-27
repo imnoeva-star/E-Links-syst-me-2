@@ -1,10 +1,11 @@
-const CACHE_NAME = 'atelier-express-v32';
+const CACHE_NAME = 'atelier-express-v33';
 const APP_FILES = [
   '/',
   '/suivi',
   '/app.js',
   '/suivi.js',
   '/offline-store.js',
+  '/offline-sync.js',
   '/e-links-intro.js',
   '/e-links-intro.css',
   '/styles.css',

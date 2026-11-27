@@ -83,6 +83,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(html, /src="\/e-links-intro\.js"/);
   assert.match(html, /href="\/e-links-intro\.css"/);
   assert.match(html, /src="\/offline-store\.js"/);
+  assert.match(html, /src="\/offline-sync\.js"/);
   assert.match(html, /id="offline-status"/);
   assert.match(html, /id="dashboard-sync-note"/);
   assert.match(html, /data-page="report"/);
@@ -156,8 +157,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(scriptText, /expense-form'\)\.classList\.toggle\('hidden', isDelivered\)/);
   assert.match(scriptText, /\/api\/reports\/personal/);
   assert.match(scriptText, /Émettre un nouveau code/);
-  assert.match(scriptText, /if \(currentOperation\.blocked\) \{\s*const reconciliation = await reconcileVersionConflict\(currentOperation\)/);
-  assert.doesNotMatch(scriptText, /ce dossier a changé sur un autre appareil\/i\.test\(currentOperation\.error/);
+  assert.match(scriptText, /if \(currentOperation\.blocked\) \{\s*const reconciliation = await OfflineSync\.reconcileVersionConflict\(currentOperation\)/);
   assert.match(scriptText, /getCoalescedEvents/);
   assert.match(scriptText, /quadraticCurveTo/);
   assert.match(scriptText, /setPointerCapture\(event\.pointerId\)/);
@@ -208,8 +208,9 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(pageHtml, /rel="apple-touch-icon" href="\/icon-192\.png"/);
   const serviceWorker = await fetch(`${baseUrl}/service-worker.js`);
   const serviceWorkerText = await serviceWorker.text();
-  assert.match(serviceWorkerText, /atelier-express-v32/);
+  assert.match(serviceWorkerText, /atelier-express-v33/);
   assert.match(serviceWorkerText, /offline-store\.js/);
+  assert.match(serviceWorkerText, /offline-sync\.js/);
   assert.match(serviceWorkerText, /icon-512\.png/);
   assert.match(serviceWorkerText, /addEventListener\('push'/);
   assert.match(serviceWorkerText, /vibrate:\s*\[300,\s*120,\s*300,\s*120,\s*650\]/);
