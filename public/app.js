@@ -445,7 +445,8 @@ async function offlineRequest(url, options = {}) {
         throw new Error('La restauration des dossiers nécessite une connexion Internet.');
       }
       const search = (parsedUrl.searchParams.get('q') || '').trim().toLocaleLowerCase('fr');
-      const status = parsedUrl.searchParams.get('status') || 'ALL';
+      const status = parsedUrl.searchParams.get('status') ||
+        (section === 'waiting' ? 'DEPOT' : 'ALL');
       const requestedPage = Math.max(1, Number(parsedUrl.searchParams.get('page')) || 1);
       const matching = (await OfflineStore.all('appareils'))
         .filter((device) => {
@@ -1449,7 +1450,7 @@ function updateReportControls() {
   document.querySelectorAll('[data-report-period]').forEach((button) => {
     const active = button.dataset.reportPeriod === state.reportPeriod;
     button.setAttribute('aria-pressed', String(active));
-    button.classList.toggle('bg-teal-700', active);
+    button.classList.toggle('bg-blue-700', active);
     button.classList.toggle('text-white', active);
     button.classList.toggle('text-slate-600', !active);
   });
@@ -1693,12 +1694,14 @@ function makeStatusSelect(device) {
         body: JSON.stringify({ statut: nextStatus }),
         headers: device.updated_at ? { 'X-Record-Version': device.updated_at } : {},
       });
-      if (nextStatus === 'LIVRE') showPage('archive', true, false);
-      await refresh();
     } catch (error) {
       alert(error.message);
       select.value = device.statut;
+      return;
     }
+    $('#waiting-status').value = nextStatus;
+    waitingPage = 1;
+    Promise.all([loadDevices('waiting'), loadDashboard()]).catch(showConnectionError);
   });
   return select;
 }
@@ -1781,7 +1784,7 @@ function renderDeviceList(listId, devices, archived, search, removed = false) {
     if (!archived && !removed && device.statut === 'PRET' && !device.acte_valide) {
       const approve = document.createElement('button');
       approve.type = 'button';
-      approve.className = 'rounded-lg bg-teal-700 px-3 py-2 text-xs font-bold text-white';
+      approve.className = 'rounded-lg bg-blue-700 px-3 py-2 text-xs font-bold text-white';
       approve.textContent = 'Restituer / signer';
       approve.addEventListener('click', () => openApproval(device));
       actions.append(approve);
@@ -1789,7 +1792,7 @@ function renderDeviceList(listId, devices, archived, search, removed = false) {
     if (removed && state.technician?.role === 'ADMIN') {
       const restore = document.createElement('button');
       restore.type = 'button';
-      restore.className = 'rounded-lg bg-teal-700 px-3 py-2 text-xs font-bold text-white';
+      restore.className = 'rounded-lg bg-blue-700 px-3 py-2 text-xs font-bold text-white';
       restore.textContent = 'Restaurer';
       restore.addEventListener('click', async (event) => {
         event.stopPropagation();
@@ -1929,7 +1932,7 @@ function renderWorkshopRequests(requests) {
       actions.className = 'mt-3 flex gap-2';
       const approve = document.createElement('button');
       approve.type = 'button';
-      approve.className = 'flex-1 rounded-lg bg-teal-700 px-3 py-2 text-sm font-bold text-white';
+      approve.className = 'flex-1 rounded-lg bg-blue-700 px-3 py-2 text-sm font-bold text-white';
       approve.textContent = request.status === 'PENDING' ? 'Approuver' : 'Émettre un nouveau code';
       approve.addEventListener('click', async () => {
         approve.disabled = true;
@@ -2089,6 +2092,7 @@ async function openDevice(id, trigger = null) {
       cdf: Number(device.frais_cdf || 0),
     };
     $('#device-edit-toggle').classList.toggle('hidden', !canManage);
+    $('#device-save-close').classList.toggle('hidden', isDelivered);
     $('#device-price-row').classList.remove('hidden');
     $('#device-payments-section').classList.remove('hidden');
     $('#device-edit-section').classList.add('hidden');
@@ -2776,6 +2780,7 @@ let submittingApproval = false;
 $('#save-approval').addEventListener('click', async () => {
   const message = $('#approval-message');
   const button = $('#save-approval');
+  const deviceId = state.approvalId;
   if (submittingApproval) return;
   if (!state.hasSignature) {
     message.textContent = 'La signature du client est requise.';
@@ -2788,16 +2793,38 @@ $('#save-approval').addEventListener('click', async () => {
   message.textContent = 'Enregistrement de la restitution…';
   message.className = 'mt-2 text-sm text-slate-600';
   try {
-    await request(`/api/appareils/${state.approvalId}/approbation`, {
+    const queuedForDevice = (await OfflineStore.getQueue())
+      .some((operation) => operation.deviceId === deviceId);
+    if (queuedForDevice && !state.isOffline && navigator.onLine) {
+      await syncPendingOperations();
+      const remainingForDevice = (await OfflineStore.getQueue())
+        .some((operation) => operation.deviceId === deviceId);
+      if (remainingForDevice) {
+        throw new Error('Synchronisez les étapes précédentes de ce dossier avant de le restituer.');
+      }
+      const currentDevice = await request(`/api/appareils/${deviceId}`);
+      if (currentDevice.statut !== 'PRET' || currentDevice.acte_valide) {
+        throw new Error('Ce dossier n’est plus prêt à être restitué. Rechargez la salle d’attente.');
+      }
+      state.approvalVersion = currentDevice.updated_at;
+    }
+    const approval = await request(`/api/appareils/${deviceId}/approbation`, {
       method: 'POST',
       body: JSON.stringify({ signature_data: canvas.toDataURL('image/png') }),
       headers: state.approvalVersion ? { 'X-Record-Version': state.approvalVersion } : {},
     });
+    if (approval?.statut !== 'LIVRE') {
+      throw new Error('La restitution n’a pas été confirmée par le serveur.');
+    }
     message.textContent = 'Restitution enregistrée.';
     message.className = 'mt-2 text-sm font-bold text-teal-700';
     dialog.close();
     showPage('archive', true, false);
-    await refresh();
+    try {
+      await Promise.all([loadDevices('archive'), loadDashboard()]);
+    } catch (refreshError) {
+      showConnectionError(refreshError);
+    }
   } catch (error) {
     message.textContent = error.message;
     message.className = 'mt-2 text-sm text-red-700';

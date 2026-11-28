@@ -113,6 +113,10 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(html, /id="device-dialog" aria-labelledby="device-title" class="hidden min-h-screen/);
   assert.doesNotMatch(html, /id="device-close"|Fermer le dossier/);
   assert.match(html, /id="device-save-close"/);
+  assert.match(html, /id="device-save-close"[^>]*bg-blue-700/);
+  assert.match(html, /id="save-approval"[^>]*bg-blue-700/);
+  assert.match(html, /<option value="DEPOT" selected>Dépôt<\/option>/);
+  assert.doesNotMatch(html, /Tous les appareils en attente|<option value="ALL">/);
   assert.match(html, /id="device-fault"/);
   assert.match(html, /id="device-edit-form"/);
   assert.doesNotMatch(html, /id="device-archive-button"|Archiver ce dossier/);
@@ -159,6 +163,11 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(scriptText, /device-payments-section'\)\.classList\.remove\('hidden'\)/);
   assert.match(scriptText, /device-qr-section'\)\.classList\.toggle\('hidden', isDelivered\)/);
   assert.match(scriptText, /expense-form'\)\.classList\.toggle\('hidden', isDelivered && !hasExpenses\)/);
+  assert.match(scriptText, /device-save-close'\)\.classList\.toggle\('hidden', isDelivered\)/);
+  assert.match(scriptText, /await syncPendingOperations\(\)/);
+  assert.match(scriptText, /approval\?\.statut !== 'LIVRE'/);
+  assert.match(scriptText, /await Promise\.all\(\[loadDevices\('archive'\), loadDashboard\(\)\]\)/);
+  assert.match(scriptText, /button\.classList\.toggle\('bg-blue-700', active\)/);
   assert.match(scriptText, /async function showWaitingRoomOnDeposits\(\)/);
   assert.match(scriptText, /Dernier versement/);
   assert.match(scriptText, /\/api\/reports\/personal/);
@@ -214,7 +223,7 @@ test('static app includes local production CSS and the technician login', async 
   assert.match(pageHtml, /rel="apple-touch-icon" href="\/icon-192\.png"/);
   const serviceWorker = await fetch(`${baseUrl}/service-worker.js`);
   const serviceWorkerText = await serviceWorker.text();
-  assert.match(serviceWorkerText, /atelier-express-v34/);
+  assert.match(serviceWorkerText, /atelier-express-v35/);
   assert.match(serviceWorkerText, /offline-store\.js/);
   assert.match(serviceWorkerText, /offline-sync\.js/);
   assert.match(serviceWorkerText, /icon-512\.png/);
@@ -312,6 +321,8 @@ test('authenticated business reads and mutations are constrained to the technici
   try {
     assert.equal((await request('/api/clients?telephone=123')).status, 200);
     assert.equal((await request('/api/appareils')).status, 200);
+    assert.equal((await request('/api/appareils?status=EN_COURS')).status, 200);
+    assert.equal((await request('/api/appareils?status=PRET')).status, 200);
     assert.equal((await request('/api/appareils?section=removed')).status, 200);
     assert.equal((await request(`/api/appareils/${deviceId}`)).status, 404);
     assert.equal((await request('/api/reports/revenue?period=week')).status, 200);
@@ -358,6 +369,12 @@ test('authenticated business reads and mutations are constrained to the technici
 
     const tenantId = AUTHENTICATED_TECHNICIAN.account_id;
     const scopedQuery = (text) => queries.find((entry) => entry.sql.includes(text));
+    const defaultWaitingQuery = queries.find((entry) =>
+      entry.sql.includes("a.statut = 'DEPOT'") && entry.values.length === 4);
+    assert.ok(defaultWaitingQuery);
+    assert.match(defaultWaitingQuery.sql, /a\.archived_at IS NULL AND a\.statut <> 'LIVRE'/);
+    assert.ok(queries.some((entry) => entry.sql.includes("a.statut = 'EN_COURS'")));
+    assert.ok(queries.some((entry) => entry.sql.includes("a.statut = 'PRET'")));
     assert.deepEqual(scopedQuery('FROM clients').values, ['%123%', tenantId]);
     assert.match(scopedQuery('WITH local_now AS').sql, /a\.account_id = \$1/);
     assert.deepEqual(scopedQuery('WITH local_now AS').values, [tenantId]);

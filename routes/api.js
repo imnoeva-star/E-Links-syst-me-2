@@ -956,7 +956,9 @@ router.get('/appareils', async (req, res, next) => {
   const search = typeof req.query.q === 'string' ? req.query.q.trim() : '';
   const searchDigits = search.replace(/\D/g, '');
   const rawPage = req.query.page === undefined ? '1' : req.query.page;
-  const status = req.query.status === undefined ? 'ALL' : req.query.status;
+  const status = req.query.status === undefined
+    ? (section === 'waiting' ? 'DEPOT' : 'ALL')
+    : req.query.status;
   const statusFilters = {
     ALL: '',
     DEPOT: " AND a.statut = 'DEPOT'",
